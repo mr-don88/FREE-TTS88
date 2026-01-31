@@ -1282,6 +1282,7 @@ async def cleanup_old_files():
 os.makedirs("templates", exist_ok=True)
 
 # index.html template
+GA_ID = "G-EYXEYJHETE"
 index_html = """
 <!DOCTYPE html>
 <html lang="vi">
