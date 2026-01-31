@@ -143,6 +143,7 @@ class Database:
             return None
         
         session_data = sessions[session_token]
+        
         # Check if session is expired (24 hours)
         created_at = datetime.fromisoformat(session_data["created_at"])
         if datetime.now() - created_at > timedelta(hours=24):
@@ -296,15 +297,25 @@ async def get_current_user(request: Request):
     
     username = database.validate_session(session_token)
     if not username:
+        # Xóa cookie nếu session không hợp lệ
+        response = RedirectResponse("/login")
+        response.delete_cookie("session_token")
         return None
     
-    return database.get_user(username)
+    user_data = database.get_user(username)
+    if not user_data:
+        return None
+    
+    return user_data
 
 async def require_login(request: Request):
     """Require user to be logged in"""
     user = await get_current_user(request)
     if not user:
-        return RedirectResponse("/login")
+        # TRÁNH redirect loop - kiểm tra nếu đã ở trang login
+        if request.url.path == "/login" or request.url.path == "/register":
+            return None
+        return RedirectResponse("/login", status_code=302)
     return user
 
 # ==================== TTS CONFIGURATION ====================
@@ -964,6 +975,35 @@ app = FastAPI(
     version="3.0.0",
     lifespan=lifespan
 )
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+
+# Thêm middleware CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Trong production, thay bằng domain cụ thể
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Thêm middleware trusted host
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=["*"]  # Trong production, thay bằng domain cụ thể
+)
+
+# Middleware để xử lý session
+@app.middleware("http")
+async def session_middleware(request: Request, call_next):
+    response = await call_next(request)
+    
+    # Thêm các header bảo mật
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    
+    return response
 
 # Global instance
 tts_processor = None
@@ -978,15 +1018,24 @@ templates = Jinja2Templates(directory="templates")
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
     """Home page"""
+    user = await get_current_user(request)
+    if user:
+        # Nếu đã login, redirect đến dashboard
+        return RedirectResponse("/dashboard", status_code=302)
+    # Nếu chưa login, hiển thị trang chủ
     return templates.TemplateResponse("index.html", {"request": request})
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
     """Login page"""
+    user = await get_current_user(request)
+    if user:
+        # Nếu đã login, redirect đến dashboard
+        return RedirectResponse("/dashboard", status_code=302)
     return templates.TemplateResponse("login.html", {"request": request})
 
 @app.post("/api/login")
-async def login(username: str = Form(...), password: str = Form(...)):
+async def login(request: Request, username: str = Form(...), password: str = Form(...)):
     """Login API"""
     try:
         user_data = database.authenticate_user(username, password)
@@ -1008,13 +1057,14 @@ async def login(username: str = Form(...), password: str = Form(...)):
             }
         })
         
+        # Đặt cookie với các thuộc tính đúng
         response.set_cookie(
             key="session_token",
             value=session_token,
             httponly=True,
-            max_age=86400,
-            secure=False,
-            samesite="lax"
+            max_age=86400,  # 24 giờ
+            samesite="lax",
+            path="/"  # Thêm path="/"
         )
         
         return response
@@ -1029,6 +1079,10 @@ async def login(username: str = Form(...), password: str = Form(...)):
 @app.get("/register", response_class=HTMLResponse)
 async def register_page(request: Request):
     """Register page"""
+    user = await get_current_user(request)
+    if user:
+        # Nếu đã login, redirect đến dashboard
+        return RedirectResponse("/dashboard", status_code=302)
     return templates.TemplateResponse("register.html", {"request": request})
 
 @app.post("/api/register")
@@ -1079,7 +1133,8 @@ async def dashboard(request: Request):
     try:
         user = await get_current_user(request)
         if not user:
-            return RedirectResponse("/login")
+            # Redirect đến login với status code 302
+            return RedirectResponse("/login", status_code=302)
         
         # Calculate usage percentage
         subscription = user["subscription"]
@@ -1097,12 +1152,15 @@ async def dashboard(request: Request):
             "user": user,
             "usage_percentage": min(usage_percentage, 100),
             "usage_text": usage_text,
-            "subscription_plans": TTSConfig.SUBSCRIPTION_PLANS
+            "subscription_plans": TTSConfig.SUBSCRIPTION_PLANS,
+            "languages": TTSConfig.LANGUAGES,
+            "formats": TTSConfig.OUTPUT_FORMATS
         })
         
     except Exception as e:
         print(f"Dashboard error: {str(e)}")
-        return RedirectResponse("/login")
+        # Redirect đến login khi có lỗi
+        return RedirectResponse("/login", status_code=302)
 
 @app.get("/tts", response_class=HTMLResponse)
 async def tts_page(request: Request):
@@ -1951,6 +2009,14 @@ def create_template_files():
 
 # ==================== RUN APPLICATION ====================
 if __name__ == "__main__":
+
+    # Xóa session cũ khi khởi động
+    if os.path.exists("sessions.json"):
+        try:
+            os.remove("sessions.json")
+            print("Cleared old sessions file")
+        except:
+            pass
     # Get port from environment variable
     port = int(os.environ.get("PORT", 8000))
     
