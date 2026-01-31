@@ -6,3 +6,4 @@ webvtt-py==0.4.6
 natsort==8.4.0
 python-multipart==0.0.6
 sqlitedict==2.1.0
+jinja2==3.1.4
