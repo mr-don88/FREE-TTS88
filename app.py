@@ -1711,6 +1711,7 @@ async def health_check():
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
 # ==================== HTML TEMPLATE CREATION ====================
+# Trong hàm create_template_file(), thay đổi phần Multi-Voice tab:
 def create_template_file():
     """Create HTML template file"""
     template_content = """
@@ -1835,6 +1836,29 @@ def create_template_file():
             padding: 1.5rem;
             margin-top: 2rem;
         }
+        
+        .voice-card {
+            border: 1px solid #dee2e6;
+            border-radius: 10px;
+            padding: 1rem;
+            margin-bottom: 1rem;
+            background: #f8f9fa;
+        }
+        
+        .character-tag {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.875rem;
+            font-weight: 600;
+            margin-right: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+        
+        .char1-tag { background: #e3f2fd; color: #1976d2; }
+        .char2-tag { background: #f3e5f5; color: #7b1fa2; }
+        .q-tag { background: #e8f5e9; color: #388e3c; }
+        .a-tag { background: #fff3e0; color: #f57c00; }
         
         @media (max-width: 768px) {
             .nav-tabs .nav-link {
@@ -2017,33 +2041,110 @@ def create_template_file():
                                       placeholder="CHAR1: Dialogue for character 1&#10;CHAR2: Dialogue for character 2&#10;NARRATOR: Narration text"></textarea>
                             <small class="text-muted">Use CHAR1:, CHAR2:, or NARRATOR: prefixes. Maximum 20 dialogues.</small>
                         </div>
-                        
-                        <div class="row">
-                            <div class="col-md-6">
-                                <div class="mb-3">
-                                    <label class="form-label">Character 1 Voice</label>
-                                    <select class="form-select" id="multiChar1Voice">
-                                        <option value="vi-VN-HoaiMyNeural">Hoài My (Nữ)</option>
-                                        <option value="vi-VN-NamMinhNeural">Nam Minh (Nam)</option>
-                                    </select>
-                                </div>
+                    </div>
+                    <div class="col-md-4">
+                        <!-- Character 1 Settings -->
+                        <div class="voice-card mb-3">
+                            <h6><span class="character-tag char1-tag">CHARACTER 1</span></h6>
+                            
+                            <div class="mb-3">
+                                <label class="form-label">Language</label>
+                                <select class="form-select multiLanguage" data-char="1">
+                                    <option value="">Select Language</option>
+                                    {% for language in languages %}
+                                    <option value="{{ language }}">{{ language }}</option>
+                                    {% endfor %}
+                                </select>
                             </div>
-                            <div class="col-md-6">
-                                <div class="mb-3">
-                                    <label class="form-label">Character 2 Voice</label>
-                                    <select class="form-select" id="multiChar2Voice">
-                                        <option value="vi-VN-NamMinhNeural">Nam Minh (Nam)</option>
-                                        <option value="vi-VN-HoaiMyNeural">Hoài My (Nữ)</option>
-                                    </select>
+                            
+                            <div class="mb-3">
+                                <label class="form-label">Voice</label>
+                                <select class="form-select multiVoice" data-char="1">
+                                    <option value="">Select Voice</option>
+                                </select>
+                            </div>
+                            
+                            <div class="row">
+                                <div class="col-4">
+                                    <label class="form-label small">Speed</label>
+                                    <input type="range" class="form-range" data-setting="rate" data-char="1" min="-30" max="30" value="0">
+                                    <small class="d-block text-center"><span data-value="rate" data-char="1">0%</span></small>
+                                </div>
+                                <div class="col-4">
+                                    <label class="form-label small">Pitch</label>
+                                    <input type="range" class="form-range" data-setting="pitch" data-char="1" min="-30" max="30" value="0">
+                                    <small class="d-block text-center"><span data-value="pitch" data-char="1">0Hz</span></small>
+                                </div>
+                                <div class="col-4">
+                                    <label class="form-label small">Volume</label>
+                                    <input type="range" class="form-range" data-setting="volume" data-char="1" min="50" max="150" value="100">
+                                    <small class="d-block text-center"><span data-value="volume" data-char="1">100%</span></small>
                                 </div>
                             </div>
                         </div>
                         
+                        <!-- Character 2 Settings -->
+                        <div class="voice-card mb-3">
+                            <h6><span class="character-tag char2-tag">CHARACTER 2</span></h6>
+                            
+                            <div class="mb-3">
+                                <label class="form-label">Language</label>
+                                <select class="form-select multiLanguage" data-char="2">
+                                    <option value="">Select Language</option>
+                                    {% for language in languages %}
+                                    <option value="{{ language }}">{{ language }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label class="form-label">Voice</label>
+                                <select class="form-select multiVoice" data-char="2">
+                                    <option value="">Select Voice</option>
+                                </select>
+                            </div>
+                            
+                            <div class="row">
+                                <div class="col-4">
+                                    <label class="form-label small">Speed</label>
+                                    <input type="range" class="form-range" data-setting="rate" data-char="2" min="-30" max="30" value="-10">
+                                    <small class="d-block text-center"><span data-value="rate" data-char="2">-10%</span></small>
+                                </div>
+                                <div class="col-4">
+                                    <label class="form-label small">Pitch</label>
+                                    <input type="range" class="form-range" data-setting="pitch" data-char="2" min="-30" max="30" value="0">
+                                    <small class="d-block text-center"><span data-value="pitch" data-char="2">0Hz</span></small>
+                                </div>
+                                <div class="col-4">
+                                    <label class="form-label small">Volume</label>
+                                    <input type="range" class="form-range" data-setting="volume" data-char="2" min="50" max="150" value="100">
+                                    <small class="d-block text-center"><span data-value="volume" data-char="2">100%</span></small>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- General Settings -->
                         <div class="mb-3">
                             <label class="form-label">
                                 Pause Between Dialogues: <span id="multiPauseValue">500ms</span>
                             </label>
                             <input type="range" class="form-range" id="multiPause" min="100" max="2000" value="500">
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">
+                                Repeat Times: <span id="multiRepeatValue">1</span>
+                            </label>
+                            <input type="range" class="form-range" id="multiRepeat" min="1" max="5" value="1">
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">Output Format</label>
+                            <select class="form-select" id="multiFormat">
+                                {% for format in formats %}
+                                <option value="{{ format }}">{{ format|upper }}</option>
+                                {% endfor %}
+                            </select>
                         </div>
                         
                         <button class="btn btn-primary w-100" onclick="generateMulti()">
@@ -2062,6 +2163,20 @@ def create_template_file():
                         </div>
                     </div>
                 </div>
+                
+                <!-- Output Section -->
+                <div class="output-card mt-4" id="multiOutput" style="display: none;">
+                    <h5><i class="fas fa-users me-2"></i>Generated Multi-Voice Audio</h5>
+                    <div class="audio-player" id="multiAudioPlayer"></div>
+                    <div class="mt-3">
+                        <a href="#" class="btn btn-success me-2" id="multiDownloadAudio">
+                            <i class="fas fa-download me-2"></i>Download Audio
+                        </a>
+                        <a href="#" class="btn btn-info" id="multiDownloadSubtitle" style="display: none;">
+                            <i class="fas fa-file-alt me-2"></i>Download Subtitles
+                        </a>
+                    </div>
+                </div>
             </div>
 
             <!-- Q&A Dialogue Tab -->
@@ -2074,26 +2189,117 @@ def create_template_file():
                                       placeholder="Q: Question text&#10;A: Answer text&#10;Q: Next question&#10;A: Next answer"></textarea>
                             <small class="text-muted">Use Q: for questions and A: for answers. Maximum 10 Q&A pairs.</small>
                         </div>
+                    </div>
+                    <div class="col-md-4">
+                        <!-- Question Settings -->
+                        <div class="voice-card mb-3">
+                            <h6><span class="character-tag q-tag">QUESTION</span></h6>
+                            
+                            <div class="mb-3">
+                                <label class="form-label">Language</label>
+                                <select class="form-select qaLanguage" data-type="question">
+                                    <option value="">Select Language</option>
+                                    {% for language in languages %}
+                                    <option value="{{ language }}">{{ language }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label class="form-label">Voice</label>
+                                <select class="form-select qaVoice" data-type="question">
+                                    <option value="">Select Voice</option>
+                                </select>
+                            </div>
+                            
+                            <div class="row">
+                                <div class="col-4">
+                                    <label class="form-label small">Speed</label>
+                                    <input type="range" class="form-range" data-setting="rate" data-type="question" min="-30" max="30" value="0">
+                                    <small class="d-block text-center"><span data-value="rate" data-type="question">0%</span></small>
+                                </div>
+                                <div class="col-4">
+                                    <label class="form-label small">Pitch</label>
+                                    <input type="range" class="form-range" data-setting="pitch" data-type="question" min="-30" max="30" value="0">
+                                    <small class="d-block text-center"><span data-value="pitch" data-type="question">0Hz</span></small>
+                                </div>
+                                <div class="col-4">
+                                    <label class="form-label small">Volume</label>
+                                    <input type="range" class="form-range" data-setting="volume" data-type="question" min="50" max="150" value="100">
+                                    <small class="d-block text-center"><span data-value="volume" data-type="question">100%</span></small>
+                                </div>
+                            </div>
+                        </div>
                         
-                        <div class="row">
-                            <div class="col-md-6">
-                                <div class="mb-3">
-                                    <label class="form-label">Question Voice</label>
-                                    <select class="form-select" id="qaQuestionVoice">
-                                        <option value="vi-VN-HoaiMyNeural">Hoài My (Nữ)</option>
-                                        <option value="vi-VN-NamMinhNeural">Nam Minh (Nam)</option>
-                                    </select>
+                        <!-- Answer Settings -->
+                        <div class="voice-card mb-3">
+                            <h6><span class="character-tag a-tag">ANSWER</span></h6>
+                            
+                            <div class="mb-3">
+                                <label class="form-label">Language</label>
+                                <select class="form-select qaLanguage" data-type="answer">
+                                    <option value="">Select Language</option>
+                                    {% for language in languages %}
+                                    <option value="{{ language }}">{{ language }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label class="form-label">Voice</label>
+                                <select class="form-select qaVoice" data-type="answer">
+                                    <option value="">Select Voice</option>
+                                </select>
+                            </div>
+                            
+                            <div class="row">
+                                <div class="col-4">
+                                    <label class="form-label small">Speed</label>
+                                    <input type="range" class="form-range" data-setting="rate" data-type="answer" min="-30" max="30" value="-10">
+                                    <small class="d-block text-center"><span data-value="rate" data-type="answer">-10%</span></small>
+                                </div>
+                                <div class="col-4">
+                                    <label class="form-label small">Pitch</label>
+                                    <input type="range" class="form-range" data-setting="pitch" data-type="answer" min="-30" max="30" value="0">
+                                    <small class="d-block text-center"><span data-value="pitch" data-type="answer">0Hz</span></small>
+                                </div>
+                                <div class="col-4">
+                                    <label class="form-label small">Volume</label>
+                                    <input type="range" class="form-range" data-setting="volume" data-type="answer" min="50" max="150" value="100">
+                                    <small class="d-block text-center"><span data-value="volume" data-type="answer">100%</span></small>
                                 </div>
                             </div>
-                            <div class="col-md-6">
-                                <div class="mb-3">
-                                    <label class="form-label">Answer Voice</label>
-                                    <select class="form-select" id="qaAnswerVoice">
-                                        <option value="vi-VN-NamMinhNeural">Nam Minh (Nam)</option>
-                                        <option value="vi-VN-HoaiMyNeural">Hoài My (Nữ)</option>
-                                    </select>
-                                </div>
-                            </div>
+                        </div>
+                        
+                        <!-- Q&A Settings -->
+                        <div class="mb-3">
+                            <label class="form-label">
+                                Pause After Question: <span id="qaPauseQValue">200ms</span>
+                            </label>
+                            <input type="range" class="form-range" id="qaPauseQ" min="100" max="1000" value="200">
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">
+                                Pause After Answer: <span id="qaPauseAValue">500ms</span>
+                            </label>
+                            <input type="range" class="form-range" id="qaPauseA" min="100" max="2000" value="500">
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">
+                                Repeat Times: <span id="qaRepeatValue">2</span>
+                            </label>
+                            <input type="range" class="form-range" id="qaRepeat" min="1" max="5" value="2">
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">Output Format</label>
+                            <select class="form-select" id="qaFormat">
+                                {% for format in formats %}
+                                <option value="{{ format }}">{{ format|upper }}</option>
+                                {% endfor %}
+                            </select>
                         </div>
                         
                         <button class="btn btn-primary w-100" onclick="generateQA()">
@@ -2110,6 +2316,20 @@ def create_template_file():
                             </div>
                             <div id="qaTaskMessage"></div>
                         </div>
+                    </div>
+                </div>
+                
+                <!-- Output Section -->
+                <div class="output-card mt-4" id="qaOutput" style="display: none;">
+                    <h5><i class="fas fa-comments me-2"></i>Generated Q&A Audio</h5>
+                    <div class="audio-player" id="qaAudioPlayer"></div>
+                    <div class="mt-3">
+                        <a href="#" class="btn btn-success me-2" id="qaDownloadAudio">
+                            <i class="fas fa-download me-2"></i>Download Audio
+                        </a>
+                        <a href="#" class="btn btn-info" id="qaDownloadSubtitle" style="display: none;">
+                            <i class="fas fa-file-alt me-2"></i>Download Subtitles
+                        </a>
                     </div>
                 </div>
             </div>
@@ -2156,6 +2376,10 @@ def create_template_file():
             
             // Auto cleanup on load
             await cleanupOldFiles();
+            
+            // Initialize multi-voice and Q&A language selectors
+            initMultiVoiceSelectors();
+            initQASelectors();
         });
         
         // Load settings
@@ -2178,18 +2402,80 @@ def create_template_file():
                     });
                 }
                 
-                // Set default language
-                document.getElementById('singleLanguage').value = 'Tiếng Việt';
+                // Apply multi-voice settings
+                if (settings.multi_voice) {
+                    const mv = settings.multi_voice;
+                    
+                    // Character 1 settings
+                    if (mv.char1) {
+                        document.querySelector('.multiLanguage[data-char="1"]').value = mv.char1.language || 'Tiếng Việt';
+                        document.querySelector('[data-setting="rate"][data-char="1"]').value = mv.char1.rate;
+                        document.querySelector('[data-setting="pitch"][data-char="1"]').value = mv.char1.pitch;
+                        document.querySelector('[data-setting="volume"][data-char="1"]').value = mv.char1.volume;
+                    }
+                    
+                    // Character 2 settings
+                    if (mv.char2) {
+                        document.querySelector('.multiLanguage[data-char="2"]').value = mv.char2.language || 'Tiếng Việt';
+                        document.querySelector('[data-setting="rate"][data-char="2"]').value = mv.char2.rate;
+                        document.querySelector('[data-setting="pitch"][data-char="2"]').value = mv.char2.pitch;
+                        document.querySelector('[data-setting="volume"][data-char="2"]').value = mv.char2.volume;
+                    }
+                    
+                    document.getElementById('multiPause').value = mv.pause;
+                    document.getElementById('multiRepeat').value = mv.repeat;
+                    
+                    // Trigger updates
+                    document.getElementById('multiPause').dispatchEvent(new Event('input'));
+                    document.getElementById('multiRepeat').dispatchEvent(new Event('input'));
+                }
+                
+                // Apply Q&A settings
+                if (settings.qa_voice) {
+                    const qv = settings.qa_voice;
+                    
+                    // Question settings
+                    if (qv.question) {
+                        document.querySelector('.qaLanguage[data-type="question"]').value = qv.question.language || 'Tiếng Việt';
+                        document.querySelector('[data-setting="rate"][data-type="question"]').value = qv.question.rate;
+                        document.querySelector('[data-setting="pitch"][data-type="question"]').value = qv.question.pitch;
+                        document.querySelector('[data-setting="volume"][data-type="question"]').value = qv.question.volume;
+                    }
+                    
+                    // Answer settings
+                    if (qv.answer) {
+                        document.querySelector('.qaLanguage[data-type="answer"]').value = qv.answer.language || 'Tiếng Việt';
+                        document.querySelector('[data-setting="rate"][data-type="answer"]').value = qv.answer.rate;
+                        document.querySelector('[data-setting="pitch"][data-type="answer"]').value = qv.answer.pitch;
+                        document.querySelector('[data-setting="volume"][data-type="answer"]').value = qv.answer.volume;
+                    }
+                    
+                    document.getElementById('qaPauseQ').value = qv.pause_q;
+                    document.getElementById('qaPauseA').value = qv.pause_a;
+                    document.getElementById('qaRepeat').value = qv.repeat;
+                    
+                    // Trigger updates
+                    document.getElementById('qaPauseQ').dispatchEvent(new Event('input'));
+                    document.getElementById('qaPauseA').dispatchEvent(new Event('input'));
+                    document.getElementById('qaRepeat').dispatchEvent(new Event('input'));
+                }
+                
+                // Set default language for all selectors
+                const defaultLanguage = 'Tiếng Việt';
+                document.getElementById('singleLanguage').value = defaultLanguage;
+                document.querySelectorAll('.multiLanguage').forEach(select => select.value = defaultLanguage);
+                document.querySelectorAll('.qaLanguage').forEach(select => select.value = defaultLanguage);
                 
             } catch (error) {
                 console.error('Error loading settings:', error);
             }
         }
         
-        // Load voices
+        // Load voices for single voice
         async function loadVoices() {
             try {
-                const response = await fetch('/api/voices?language=Tiếng Việt');
+                const language = document.getElementById('singleLanguage').value || 'Tiếng Việt';
+                const response = await fetch(`/api/voices?language=${encodeURIComponent(language)}`);
                 const data = await response.json();
                 
                 const voiceSelect = document.getElementById('singleVoice');
@@ -2212,39 +2498,240 @@ def create_template_file():
             }
         }
         
+        // Initialize multi-voice selectors
+        async function initMultiVoiceSelectors() {
+            // Set up language change handlers for multi-voice
+            document.querySelectorAll('.multiLanguage').forEach(select => {
+                select.addEventListener('change', async function() {
+                    const char = this.dataset.char;
+                    const language = this.value;
+                    
+                    if (language) {
+                        await loadMultiVoices(char, language);
+                    }
+                });
+                
+                // Load initial voices
+                const language = select.value || 'Tiếng Việt';
+                loadMultiVoices(select.dataset.char, language);
+            });
+        }
+        
+        // Load voices for multi-voice characters
+        async function loadMultiVoices(char, language) {
+            try {
+                const response = await fetch(`/api/voices?language=${encodeURIComponent(language)}`);
+                const data = await response.json();
+                
+                const voiceSelect = document.querySelector(`.multiVoice[data-char="${char}"]`);
+                voiceSelect.innerHTML = '<option value="">Select Voice</option>';
+                
+                data.voices.forEach(voice => {
+                    const option = document.createElement('option');
+                    option.value = voice.name;
+                    option.textContent = `${voice.display} (${voice.gender})`;
+                    voiceSelect.appendChild(option);
+                });
+                
+                // Set default voice based on character
+                let defaultVoice = 'vi-VN-HoaiMyNeural';
+                if (char === '2') {
+                    defaultVoice = 'vi-VN-NamMinhNeural';
+                }
+                
+                const defaultVoiceOption = data.voices.find(v => v.name === defaultVoice);
+                if (defaultVoiceOption) {
+                    voiceSelect.value = defaultVoice;
+                }
+            } catch (error) {
+                console.error(`Error loading voices for character ${char}:`, error);
+            }
+        }
+        
+        // Initialize Q&A selectors
+        async function initQASelectors() {
+            // Set up language change handlers for Q&A
+            document.querySelectorAll('.qaLanguage').forEach(select => {
+                select.addEventListener('change', async function() {
+                    const type = this.dataset.type;
+                    const language = this.value;
+                    
+                    if (language) {
+                        await loadQAVoices(type, language);
+                    }
+                });
+                
+                // Load initial voices
+                const language = select.value || 'Tiếng Việt';
+                loadQAVoices(select.dataset.type, language);
+            });
+        }
+        
+        // Load voices for Q&A
+        async function loadQAVoices(type, language) {
+            try {
+                const response = await fetch(`/api/voices?language=${encodeURIComponent(language)}`);
+                const data = await response.json();
+                
+                const voiceSelect = document.querySelector(`.qaVoice[data-type="${type}"]`);
+                voiceSelect.innerHTML = '<option value="">Select Voice</option>';
+                
+                data.voices.forEach(voice => {
+                    const option = document.createElement('option');
+                    option.value = voice.name;
+                    option.textContent = `${voice.display} (${voice.gender})`;
+                    voiceSelect.appendChild(option);
+                });
+                
+                // Set default voice based on type
+                let defaultVoice = 'vi-VN-HoaiMyNeural';
+                if (type === 'answer') {
+                    defaultVoice = 'vi-VN-NamMinhNeural';
+                }
+                
+                const defaultVoiceOption = data.voices.find(v => v.name === defaultVoice);
+                if (defaultVoiceOption) {
+                    voiceSelect.value = defaultVoice;
+                }
+            } catch (error) {
+                console.error(`Error loading voices for ${type}:`, error);
+            }
+        }
+        
         // Initialize range displays
         function initRangeDisplays() {
-            const ranges = [
+            // Single voice ranges
+            const singleRanges = [
                 { id: 'singleRate', display: 'singleRateValue', suffix: '%' },
                 { id: 'singlePitch', display: 'singlePitchValue', suffix: 'Hz' },
                 { id: 'singleVolume', display: 'singleVolumeValue', suffix: '%' },
-                { id: 'singlePause', display: 'singlePauseValue', suffix: 'ms' },
-                { id: 'multiPause', display: 'multiPauseValue', suffix: 'ms' }
+                { id: 'singlePause', display: 'singlePauseValue', suffix: 'ms' }
             ];
             
-            ranges.forEach(range => {
+            singleRanges.forEach(range => {
                 const input = document.getElementById(range.id);
                 const display = document.getElementById(range.display);
                 
                 if (input && display) {
-                    // Set initial value
                     display.textContent = input.value + range.suffix;
-                    
-                    // Update on change
                     input.addEventListener('input', () => {
                         display.textContent = input.value + range.suffix;
                     });
                 }
             });
+            
+            // Multi-voice ranges
+            const multiRanges = [
+                { id: 'multiPause', display: 'multiPauseValue', suffix: 'ms' },
+                { id: 'multiRepeat', display: 'multiRepeatValue', suffix: 'x' }
+            ];
+            
+            multiRanges.forEach(range => {
+                const input = document.getElementById(range.id);
+                const display = document.getElementById(range.display);
+                
+                if (input && display) {
+                    display.textContent = input.value + range.suffix;
+                    input.addEventListener('input', () => {
+                        display.textContent = input.value + range.suffix;
+                    });
+                }
+            });
+            
+            // Q&A ranges
+            const qaRanges = [
+                { id: 'qaPauseQ', display: 'qaPauseQValue', suffix: 'ms' },
+                { id: 'qaPauseA', display: 'qaPauseAValue', suffix: 'ms' },
+                { id: 'qaRepeat', display: 'qaRepeatValue', suffix: 'x' }
+            ];
+            
+            qaRanges.forEach(range => {
+                const input = document.getElementById(range.id);
+                const display = document.getElementById(range.display);
+                
+                if (input && display) {
+                    display.textContent = input.value + range.suffix;
+                    input.addEventListener('input', () => {
+                        display.textContent = input.value + range.suffix;
+                    });
+                }
+            });
+            
+            // Multi-voice character ranges
+            document.querySelectorAll('[data-value][data-char]').forEach(span => {
+                const char = span.dataset.char;
+                const setting = span.dataset.value;
+                const input = document.querySelector(`[data-setting="${setting}"][data-char="${char}"]`);
+                
+                if (input && span) {
+                    const suffix = setting === 'rate' ? '%' : setting === 'pitch' ? 'Hz' : '%';
+                    span.textContent = input.value + suffix;
+                    
+                    input.addEventListener('input', () => {
+                        span.textContent = input.value + suffix;
+                    });
+                }
+            });
+            
+            // Q&A ranges
+            document.querySelectorAll('[data-value][data-type]').forEach(span => {
+                const type = span.dataset.type;
+                const setting = span.dataset.value;
+                const input = document.querySelector(`[data-setting="${setting}"][data-type="${type}"]`);
+                
+                if (input && span) {
+                    const suffix = setting === 'rate' ? '%' : setting === 'pitch' ? 'Hz' : '%';
+                    span.textContent = input.value + suffix;
+                    
+                    input.addEventListener('input', () => {
+                        span.textContent = input.value + suffix;
+                    });
+                }
+            });
         }
+        
+        // Language change handler for single voice
+        document.getElementById('singleLanguage').addEventListener('change', async function() {
+            const language = this.value;
+            if (language) {
+                try {
+                    const response = await fetch(`/api/voices?language=${encodeURIComponent(language)}`);
+                    const data = await response.json();
+                    
+                    const voiceSelect = document.getElementById('singleVoice');
+                    voiceSelect.innerHTML = '<option value="">Select Voice</option>';
+                    
+                    data.voices.forEach(voice => {
+                        const option = document.createElement('option');
+                        option.value = voice.name;
+                        option.textContent = `${voice.display} (${voice.gender})`;
+                        voiceSelect.appendChild(option);
+                    });
+                    
+                    // Auto-select first voice
+                    if (data.voices.length > 0) {
+                        voiceSelect.value = data.voices[0].name;
+                    }
+                } catch (error) {
+                    console.error('Error loading voices:', error);
+                    showToast('Error loading voices for selected language', 'error');
+                }
+            }
+        });
         
         // Generate single voice audio
         async function generateSingle() {
             const text = document.getElementById('singleText').value.trim();
             const voice = document.getElementById('singleVoice').value;
+            const language = document.getElementById('singleLanguage').value;
             
             if (!text) {
                 showToast('Please enter text', 'error');
+                return;
+            }
+            
+            if (!language) {
+                showToast('Please select a language', 'error');
                 return;
             }
             
@@ -2290,11 +2777,37 @@ def create_template_file():
         // Generate multi-voice audio
         async function generateMulti() {
             const text = document.getElementById('multiText').value.trim();
-            const char1Voice = document.getElementById('multiChar1Voice').value;
-            const char2Voice = document.getElementById('multiChar2Voice').value;
             
             if (!text) {
                 showToast('Please enter dialogue text', 'error');
+                return;
+            }
+            
+            // Get character 1 settings
+            const char1Language = document.querySelector('.multiLanguage[data-char="1"]').value;
+            const char1Voice = document.querySelector('.multiVoice[data-char="1"]').value;
+            
+            if (!char1Language) {
+                showToast('Please select language for Character 1', 'error');
+                return;
+            }
+            
+            if (!char1Voice) {
+                showToast('Please select voice for Character 1', 'error');
+                return;
+            }
+            
+            // Get character 2 settings
+            const char2Language = document.querySelector('.multiLanguage[data-char="2"]').value;
+            const char2Voice = document.querySelector('.multiVoice[data-char="2"]').value;
+            
+            if (!char2Language) {
+                showToast('Please select language for Character 2', 'error');
+                return;
+            }
+            
+            if (!char2Voice) {
+                showToast('Please select voice for Character 2', 'error');
                 return;
             }
             
@@ -2302,19 +2815,19 @@ def create_template_file():
             
             const formData = new FormData();
             formData.append('text', text);
-            formData.append('char1_language', 'Tiếng Việt');
+            formData.append('char1_language', char1Language);
             formData.append('char1_voice', char1Voice);
-            formData.append('char1_rate', 0);
-            formData.append('char1_pitch', 0);
-            formData.append('char1_volume', 100);
-            formData.append('char2_language', 'Tiếng Việt');
+            formData.append('char1_rate', document.querySelector('[data-setting="rate"][data-char="1"]').value);
+            formData.append('char1_pitch', document.querySelector('[data-setting="pitch"][data-char="1"]').value);
+            formData.append('char1_volume', document.querySelector('[data-setting="volume"][data-char="1"]').value);
+            formData.append('char2_language', char2Language);
             formData.append('char2_voice', char2Voice);
-            formData.append('char2_rate', -10);
-            formData.append('char2_pitch', 0);
-            formData.append('char2_volume', 100);
+            formData.append('char2_rate', document.querySelector('[data-setting="rate"][data-char="2"]').value);
+            formData.append('char2_pitch', document.querySelector('[data-setting="pitch"][data-char="2"]').value);
+            formData.append('char2_volume', document.querySelector('[data-setting="volume"][data-char="2"]').value);
             formData.append('pause', document.getElementById('multiPause').value);
-            formData.append('repeat', 1);
-            formData.append('output_format', 'mp3');
+            formData.append('repeat', document.getElementById('multiRepeat').value);
+            formData.append('output_format', document.getElementById('multiFormat').value);
             
             try {
                 const response = await fetch('/api/generate/multi', {
@@ -2342,11 +2855,37 @@ def create_template_file():
         // Generate Q&A audio
         async function generateQA() {
             const text = document.getElementById('qaText').value.trim();
-            const questionVoice = document.getElementById('qaQuestionVoice').value;
-            const answerVoice = document.getElementById('qaAnswerVoice').value;
             
             if (!text) {
                 showToast('Please enter Q&A text', 'error');
+                return;
+            }
+            
+            // Get question settings
+            const questionLanguage = document.querySelector('.qaLanguage[data-type="question"]').value;
+            const questionVoice = document.querySelector('.qaVoice[data-type="question"]').value;
+            
+            if (!questionLanguage) {
+                showToast('Please select language for Questions', 'error');
+                return;
+            }
+            
+            if (!questionVoice) {
+                showToast('Please select voice for Questions', 'error');
+                return;
+            }
+            
+            // Get answer settings
+            const answerLanguage = document.querySelector('.qaLanguage[data-type="answer"]').value;
+            const answerVoice = document.querySelector('.qaVoice[data-type="answer"]').value;
+            
+            if (!answerLanguage) {
+                showToast('Please select language for Answers', 'error');
+                return;
+            }
+            
+            if (!answerVoice) {
+                showToast('Please select voice for Answers', 'error');
                 return;
             }
             
@@ -2354,20 +2893,20 @@ def create_template_file():
             
             const formData = new FormData();
             formData.append('text', text);
-            formData.append('question_language', 'Tiếng Việt');
+            formData.append('question_language', questionLanguage);
             formData.append('question_voice', questionVoice);
-            formData.append('question_rate', 0);
-            formData.append('question_pitch', 0);
-            formData.append('question_volume', 100);
-            formData.append('answer_language', 'Tiếng Việt');
+            formData.append('question_rate', document.querySelector('[data-setting="rate"][data-type="question"]').value);
+            formData.append('question_pitch', document.querySelector('[data-setting="pitch"][data-type="question"]').value);
+            formData.append('question_volume', document.querySelector('[data-setting="volume"][data-type="question"]').value);
+            formData.append('answer_language', answerLanguage);
             formData.append('answer_voice', answerVoice);
-            formData.append('answer_rate', -10);
-            formData.append('answer_pitch', 0);
-            formData.append('answer_volume', 100);
-            formData.append('pause_q', 200);
-            formData.append('pause_a', 500);
-            formData.append('repeat', 2);
-            formData.append('output_format', 'mp3');
+            formData.append('answer_rate', document.querySelector('[data-setting="rate"][data-type="answer"]').value);
+            formData.append('answer_pitch', document.querySelector('[data-setting="pitch"][data-type="answer"]').value);
+            formData.append('answer_volume', document.querySelector('[data-setting="volume"][data-type="answer"]').value);
+            formData.append('pause_q', document.getElementById('qaPauseQ').value);
+            formData.append('pause_a', document.getElementById('qaPauseA').value);
+            formData.append('repeat', document.getElementById('qaRepeat').value);
+            formData.append('output_format', document.getElementById('qaFormat').value);
             
             try {
                 const response = await fetch('/api/generate/qa', {
@@ -2425,10 +2964,8 @@ def create_template_file():
                         if (task.result && task.result.success) {
                             showToast(task.result.message);
                             
-                            // Show output for single voice
-                            if (type === 'single') {
-                                showSingleOutput(task.result);
-                            }
+                            // Show output
+                            showOutput(type, task.result);
                         }
                         
                         // Hide status after 5 seconds
@@ -2450,12 +2987,12 @@ def create_template_file():
             }, 2000); // Poll every 2 seconds
         }
         
-        // Show single voice output
-        function showSingleOutput(result) {
-            const outputDiv = document.getElementById('singleOutput');
-            const audioPlayer = document.getElementById('singleAudioPlayer');
-            const downloadAudio = document.getElementById('singleDownloadAudio');
-            const downloadSubtitle = document.getElementById('singleDownloadSubtitle');
+        // Show output based on type
+        function showOutput(type, result) {
+            const outputDiv = document.getElementById(`${type}Output`);
+            const audioPlayer = document.getElementById(`${type}AudioPlayer`);
+            const downloadAudio = document.getElementById(`${type}DownloadAudio`);
+            const downloadSubtitle = document.getElementById(`${type}DownloadSubtitle`);
             
             // Add timestamp to avoid cache
             const timestamp = new Date().getTime();
@@ -2469,11 +3006,11 @@ def create_template_file():
             `;
             
             downloadAudio.href = result.audio_url;
-            downloadAudio.download = "tts_audio.mp3";
+            downloadAudio.download = `tts_${type}_audio.mp3`;
             
             if (result.srt_url) {
                 downloadSubtitle.href = result.srt_url;
-                downloadSubtitle.download = "tts_subtitle.srt";
+                downloadSubtitle.download = `tts_${type}_subtitle.srt`;
                 downloadSubtitle.style.display = 'inline-block';
             } else {
                 downloadSubtitle.style.display = 'none';
@@ -2522,7 +3059,6 @@ def create_template_file():
                 const tasksList = document.getElementById('tasksList');
                 tasksList.innerHTML = '<div class="text-center"><div class="spinner-border"></div></div>';
                 
-                // This is a simple implementation
                 // In a real app, you would fetch tasks from an API
                 setTimeout(() => {
                     tasksList.innerHTML = `
@@ -2577,30 +3113,6 @@ def create_template_file():
                 toastElement.remove();
             });
         }
-        
-        // Language change handler
-        document.getElementById('singleLanguage').addEventListener('change', async function() {
-            const language = this.value;
-            if (language) {
-                try {
-                    const response = await fetch(`/api/voices?language=${encodeURIComponent(language)}`);
-                    const data = await response.json();
-                    
-                    const voiceSelect = document.getElementById('singleVoice');
-                    voiceSelect.innerHTML = '<option value="">Select Voice</option>';
-                    
-                    data.voices.forEach(voice => {
-                        const option = document.createElement('option');
-                        option.value = voice.name;
-                        option.textContent = `${voice.display} (${voice.gender})`;
-                        voiceSelect.appendChild(option);
-                    });
-                } catch (error) {
-                    console.error('Error loading voices:', error);
-                    showToast('Error loading voices for selected language', 'error');
-                }
-            }
-        });
     </script>
 </body>
 </html>
