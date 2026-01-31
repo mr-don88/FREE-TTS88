@@ -1,4 +1,4 @@
-# app.py - COMPLETE PROFESSIONAL TTS & STT GENERATOR
+# app.py - Professional TTS Generator with 3 Tabs and Browser Cache Fix
 import asyncio
 import json
 import os
@@ -10,7 +10,7 @@ import zipfile
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, Form, UploadFile, File, HTTPException, BackgroundTasks, WebSocket
+from fastapi import FastAPI, Request, Form, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -25,12 +25,6 @@ import shutil
 import threading
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
-import speech_recognition as sr
-import io
-import tempfile
-from pydub import AudioSegment
-import numpy as np
-from scipy.io import wavfile
 
 # ==================== SYSTEM CONFIGURATION ====================
 class TTSConfig:
@@ -38,78 +32,63 @@ class TTSConfig:
     
     LANGUAGES = {
         "Vietnamese": [
-            {"name": "vi-VN-HoaiMyNeural", "gender": "👩 Female", "display": "Hoài My"},
-            {"name": "vi-VN-NamMinhNeural", "gender": "🤵 Male", "display": "Nam Minh"}
+            {"name": "vi-VN-HoaiMyNeural", "gender": "👩Female", "display": "Hoài My"},
+            {"name": "vi-VN-NamMinhNeural", "gender": "🤵Male", "display": "Nam Minh"}
         ],
         "English (US)": [
-            {"name": "en-US-GuyNeural", "gender": "🤵 Male", "display": "Guy (US)"},
-            {"name": "en-US-JennyNeural", "gender": "👩 Female", "display": "Jenny (US)"},
-            {"name": "en-US-AvaNeural", "gender": "👩 Female", "display": "Ava (US)"},
-            {"name": "en-US-AndrewNeural", "gender": "🤵 Male", "display": "Andrew (US)"},
-            {"name": "en-US-EmmaNeural", "gender": "👩 Female", "display": "Emma (US)"},
-            {"name": "en-US-BrianNeural", "gender": "🤵 Male", "display": "Brian (US)"},
-            {"name": "en-US-AnaNeural", "gender": "👩 Female", "display": "Ana (US)"},
-            {"name": "en-US-AndrewMultilingualNeural", "gender": "🤵 Male", "display": "Andrew (US • Multi)"},
-            {"name": "en-US-AriaNeural", "gender": "👩 Female", "display": "Aria (US)"},
-            {"name": "en-US-AvaMultilingualNeural", "gender": "👩 Female", "display": "Ava (US • Multi)"},
-            {"name": "en-US-BrianMultilingualNeural", "gender": "🤵 Male", "display": "Brian (US • Multi)"},
-            {"name": "en-US-ChristopherNeural", "gender": "🤵 Male", "display": "Christopher (US)"},
-            {"name": "en-US-EmmaMultilingualNeural", "gender": "👩 Female", "display": "Emma (US • Multi)"},
-            {"name": "en-US-EricNeural", "gender": "🤵 Male", "display": "Eric (US)"},
-            {"name": "en-US-MichelleNeural", "gender": "👩 Female", "display": "Michelle (US)"},
-            {"name": "en-US-RogerNeural", "gender": "🤵 Male", "display": "Roger (US)"},
-            {"name": "en-US-SteffanNeural", "gender": "🤵 Male", "display": "Steffan (US)"}
+            {"name": "en-US-GuyNeural", "gender": "🤵Male", "display": "Guy (US)"},
+            {"name": "en-US-JennyNeural", "gender": "👩Female", "display": "Jenny (US)"},
+            {"name": "en-US-AvaNeural", "gender": "👩Female", "display": "Ava (US)"},
+            {"name": "en-US-AndrewNeural", "gender": "🤵Male", "display": "Andrew (US)"},
+            {"name": "en-US-EmmaNeural", "gender": "👩Female", "display": "Emma (US)"},
+            {"name": "en-US-BrianNeural", "gender": "🤵Male", "display": "Brian (US)"},
+            {"name": "en-US-AnaNeural", "gender": "👩Female", "display": "Ana (US)"},
+            {"name": "en-US-AndrewMultilingualNeural", "gender": "🤵Male", "display": "Andrew (US • Multi)"},
+            {"name": "en-US-AriaNeural", "gender": "👩Female", "display": "Aria (US)"},
+            {"name": "en-US-AvaMultilingualNeural", "gender": "👩Female", "display": "Ava (US • Multi)"},
+            {"name": "en-US-BrianMultilingualNeural", "gender": "🤵Male", "display": "Brian (US • Multi)"},
+            {"name": "en-US-ChristopherNeural", "gender": "🤵Male", "display": "Christopher (US)"},
+            {"name": "en-US-EmmaMultilingualNeural", "gender": "👩Female", "display": "Emma (US • Multi)"},
+            {"name": "en-US-EricNeural", "gender": "🤵Male", "display": "Eric (US)"},
+            {"name": "en-US-MichelleNeural", "gender": "👩Female", "display": "Michelle (US)"},
+            {"name": "en-US-RogerNeural", "gender": "🤵Male", "display": "Roger (US)"},
+            {"name": "en-US-SteffanNeural", "gender": "🤵Male", "display": "Steffan (US)"}
         ],
         "English (UK)": [
-            {"name": "en-GB-LibbyNeural", "gender": "👩 Female", "display": "Libby (UK)"},
-            {"name": "en-GB-MiaNeural", "gender": "👩 Female", "display": "Mia (UK)"},
-            {"name": "en-GB-RyanNeural", "gender": "🤵 Male", "display": "Ryan (UK)"},
-            {"name": "en-GB-MaisieNeural", "gender": "👩 Female", "display": "Maisie (UK)"},
-            {"name": "en-GB-SoniaNeural", "gender": "👩 Female", "display": "Sonia (UK)"},
-            {"name": "en-GB-ThomasNeural", "gender": "🤵 Male", "display": "Thomas (UK)"}
+            {"name": "en-GB-LibbyNeural", "gender": "👩Female", "display": "Libby (UK)"},
+            {"name": "en-GB-MiaNeural", "gender": "👩Female", "display": "Mia (UK)"},
+            {"name": "en-GB-RyanNeural", "gender": "🤵Male", "display": "Ryan (UK)"},
+            {"name": "en-GB-MaisieNeural", "gender": "👩Female", "display": "Maisie (UK)"},
+            {"name": "en-GB-SoniaNeural", "gender": "👩Female", "display": "Sonia (UK)"},
+            {"name": "en-GB-ThomasNeural", "gender": "🤵Male", "display": "Thomas (UK)"}
         ],
         "English (Australia)": [
-            {"name": "en-AU-NatashaNeural", "gender": "👩 Female", "display": "Natasha (AU)"},
-            {"name": "en-AU-WilliamNeural", "gender": "🤵 Male", "display": "William (AU)"},
-            {"name": "en-AU-TinaNeural", "gender": "👩 Female", "display": "Tina (AU)"},
-            {"name": "en-AU-KenNeural", "gender": "🤵 Male", "display": "Ken (AU)"}
+            {"name": "en-AU-NatashaNeural", "gender": "👩Female", "display": "Natasha (AU)"},
+            {"name": "en-AU-WilliamNeural", "gender": "🤵Male", "display": "William (AU)"},
+            {"name": "en-AU-TinaNeural", "gender": "👩Female", "display": "Tina (AU)"},
+            {"name": "en-AU-KenNeural", "gender": "🤵Male", "display": "Ken (AU)"}
         ],
         "English (Canada)": [
-            {"name": "en-CA-ClaraNeural", "gender": "👩 Female", "display": "Clara (CA)"},
-            {"name": "en-CA-LiamNeural", "gender": "🤵 Male", "display": "Liam (CA)"}
+            {"name": "en-CA-ClaraNeural", "gender": "👩Female", "display": "Clara (CA)"},
+            {"name": "en-CA-LiamNeural", "gender": "🤵Male", "display": "Liam (CA)"}
         ],
         "English (India)": [
-            {"name": "en-IN-NeerjaNeural", "gender": "👩 Female", "display": "Neerja (IN)"},
-            {"name": "en-IN-PrabhatNeural", "gender": "🤵 Male", "display": "Prabhat (IN)"}
+            {"name": "en-IN-NeerjaNeural", "gender": "👩Female", "display": "Neerja (IN)"},
+            {"name": "en-IN-PrabhatNeural", "gender": "🤵Male", "display": "Prabhat (IN)"}
         ],
         "Mandarin Chinese (zh-CN)": [
-            {"name": "zh-CN-XiaoxiaoNeural", "gender": "👩 Female", "display": "晓晓"},
-            {"name": "zh-CN-YunxiNeural", "gender": "🤵 Male", "display": "云希"},
-            {"name": "zh-CN-YunjianNeural", "gender": "🤵 Male", "display": "云健"},
-            {"name": "zh-CN-XiaoyiNeural", "gender": "👩 Female", "display": "晓伊"},
-            {"name": "zh-CN-XiaomoNeural", "gender": "👩 Female", "display": "晓墨"},
-            {"name": "zh-CN-XiaoxuanNeural", "gender": "👩 Female", "display": "晓萱"},
-            {"name": "zh-CN-XiaohanNeural", "gender": "👩 Female", "display": "晓涵"},
-            {"name": "zh-CN-XiaoruiNeural", "gender": "👩 Female", "display": "晓瑞"}
+            {"name": "zh-CN-XiaoxiaoNeural", "gender": "👩Female", "display": "晓晓"},
+            {"name": "zh-CN-YunxiNeural", "gender": "🤵Male", "display": "云希"},
+            {"name": "zh-CN-YunjianNeural", "gender": "🤵Male", "display": "云健"},
+            {"name": "zh-CN-XiaoyiNeural", "gender": "👩Female", "display": "晓伊"},
+            {"name": "zh-CN-XiaomoNeural", "gender": "👩Female", "display": "晓墨"},
+            {"name": "zh-CN-XiaoxuanNeural", "gender": "👩Female", "display": "晓萱"},
+            {"name": "zh-CN-XiaohanNeural", "gender": "👩Female", "display": "晓涵"},
+            {"name": "zh-CN-XiaoruiNeural", "gender": "👩Female", "display": "晓瑞"}
         ],
     }
     
     OUTPUT_FORMATS = ["mp3", "wav"]
-    
-    STT_LANGUAGES = {
-        "en-US": "English (US)",
-        "en-GB": "English (UK)",
-        "en-AU": "English (Australia)",
-        "vi-VN": "Vietnamese",
-        "zh-CN": "Chinese (Mandarin)",
-        "ja-JP": "Japanese",
-        "ko-KR": "Korean",
-        "fr-FR": "French",
-        "de-DE": "German",
-        "es-ES": "Spanish",
-        "it-IT": "Italian",
-        "ru-RU": "Russian"
-    }
     
     DEFAULT_PAUSE_SETTINGS = {
         ".": 500,
@@ -126,7 +105,7 @@ class TTSConfig:
 class TaskManager:
     def __init__(self):
         self.tasks = {}
-        self.executor = ThreadPoolExecutor(max_workers=2)
+        self.executor = ThreadPoolExecutor(max_workers=4)
     
     def create_task(self, task_id: str, task_type: str):
         self.tasks[task_id] = {
@@ -452,98 +431,16 @@ class AudioCacheManager:
             print(f"Error clearing all cache: {e}")
             return False
 
-# ==================== STT PROCESSOR (SPEECH TO TEXT) ====================
-class STTProcessor:
-    def __init__(self):
-        self.recognizer = sr.Recognizer()
-    
-    async def transcribe_audio(self, audio_file_path: str, language: str = "en-US") -> dict:
-        """Transcribe audio file to text"""
-        try:
-            # Load audio file
-            audio = AudioSegment.from_file(audio_file_path)
-            
-            # Convert to WAV format for speech recognition
-            wav_file = audio_file_path.replace(os.path.splitext(audio_file_path)[1], ".wav")
-            audio.export(wav_file, format="wav")
-            
-            # Perform speech recognition
-            with sr.AudioFile(wav_file) as source:
-                # Adjust for ambient noise
-                self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
-                
-                # Record the audio
-                audio_data = self.recognizer.record(source)
-                
-                # Recognize using Google Speech Recognition
-                try:
-                    text = self.recognizer.recognize_google(audio_data, language=language)
-                    confidence = 0.85  # Google doesn't provide confidence
-                except sr.UnknownValueError:
-                    text = "Could not understand audio"
-                    confidence = 0.0
-                except sr.RequestError as e:
-                    text = f"Speech recognition service error: {e}"
-                    confidence = 0.0
-            
-            # Clean up temporary WAV file
-            try:
-                os.remove(wav_file)
-            except:
-                pass
-            
-            return {
-                "success": True,
-                "text": text,
-                "language": language,
-                "confidence": confidence,
-                "duration": len(audio) / 1000  # Duration in seconds
-            }
-            
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "text": ""
-            }
-    
-    async def transcribe_audio_bytes(self, audio_bytes: bytes, language: str = "en-US") -> dict:
-        """Transcribe audio bytes to text"""
-        try:
-            # Create a temporary file
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_file:
-                tmp_file.write(audio_bytes)
-                tmp_path = tmp_file.name
-            
-            # Use the file-based transcription
-            result = await self.transcribe_audio(tmp_path, language)
-            
-            # Clean up temporary file
-            try:
-                os.remove(tmp_path)
-            except:
-                pass
-            
-            return result
-            
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "text": ""
-            }
-
 # ==================== TTS PROCESSOR ====================
 class TTSProcessor:
     def __init__(self):
         self.text_processor = TextProcessor()
         self.cache_manager = AudioCacheManager()
-        self.stt_processor = STTProcessor()
         self.load_settings()
         self.initialize_directories()
     
     def initialize_directories(self):
-        directories = ["outputs", "temp", "audio_cache", "static", "templates", "uploads"]
+        directories = ["outputs", "temp", "audio_cache", "static", "templates", "batch_uploads"]
         for directory in directories:
             os.makedirs(directory, exist_ok=True)
     
@@ -561,9 +458,22 @@ class TTSProcessor:
                     "volume": 100,
                     "pause": 500
                 },
-                "stt": {
-                    "language": "en-US",
-                    "auto_detect": False
+                "multi_voice": {
+                    "language": "Vietnamese",
+                    "voice1": "vi-VN-HoaiMyNeural",
+                    "voice2": "vi-VN-NamMinhNeural",
+                    "rate": 0,
+                    "pitch": 0,
+                    "volume": 100,
+                    "pause": 500
+                },
+                "batch": {
+                    "language": "Vietnamese",
+                    "voice": "vi-VN-HoaiMyNeural",
+                    "rate": 0,
+                    "pitch": 0,
+                    "volume": 100,
+                    "pause": 500
                 }
             }
             self.save_settings()
@@ -584,12 +494,11 @@ class TTSProcessor:
             if not clear_cache:
                 cached_file = self.cache_manager.get_cached_audio(cache_key)
                 if cached_file:
-                    # Create a unique copy for this request
                     temp_file = f"temp/cache_{uuid.uuid4().hex[:8]}.mp3"
                     shutil.copy(cached_file, temp_file)
                     return temp_file, []
             
-            # Create unique filename with UUID
+            # Generate unique filename to prevent browser cache issues
             unique_id = uuid.uuid4().hex[:16]
             timestamp = int(time.time())
             
@@ -621,7 +530,7 @@ class TTSProcessor:
             
             audio_data = b"".join(audio_chunks)
             
-            # Create unique temp filename
+            # Create unique temp file
             temp_file = f"temp/audio_{timestamp}_{unique_id}.mp3"
             
             with open(temp_file, "wb") as f:
@@ -682,10 +591,9 @@ class TTSProcessor:
                                  volume: int, pause: int, output_format: str = "mp3", 
                                  task_id: str = None, clear_cache: bool = False):
         self.cleanup_temp_files()
-        
         self.cache_manager.cleanup_old_cache(keep_count=30)
         
-        # Create unique output directory with UUID
+        # Create unique output directory with UUID to prevent cache issues
         unique_id = uuid.uuid4().hex[:12]
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_dir = f"outputs/single_{timestamp}_{unique_id}"
@@ -754,7 +662,7 @@ class TTSProcessor:
                 combined += AudioSegment.silent(duration=pause)
                 current_time += pause
         
-        # Create unique output filename
+        # Create unique output filename with timestamp and random suffix
         output_timestamp = int(time.time())
         random_suffix = random.randint(1000, 9999)
         output_filename = f"single_voice_{output_timestamp}_{random_suffix}.{output_format}"
@@ -774,55 +682,240 @@ class TTSProcessor:
         
         return output_file, srt_file
     
-    async def process_stt(self, audio_file: UploadFile, language: str = "en-US", task_id: str = None):
-        """Process Speech-to-Text conversion"""
-        try:
-            # Save uploaded file
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            unique_id = uuid.uuid4().hex[:8]
-            upload_dir = "uploads/stt"
-            os.makedirs(upload_dir, exist_ok=True)
-            
-            filename = f"stt_{timestamp}_{unique_id}{os.path.splitext(audio_file.filename)[1]}"
-            file_path = os.path.join(upload_dir, filename)
-            
-            # Save file
-            with open(file_path, "wb") as f:
-                content = await audio_file.read()
-                f.write(content)
-            
-            # Transcribe audio
+    async def process_multi_voice(self, text: str, voice1: str, voice2: str, rate: int, pitch: int, 
+                                 volume: int, pause: int, output_format: str = "mp3", 
+                                 task_id: str = None, clear_cache: bool = False):
+        self.cleanup_temp_files()
+        self.cache_manager.cleanup_old_cache(keep_count=30)
+        
+        # Create unique output directory
+        unique_id = uuid.uuid4().hex[:12]
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_dir = f"outputs/multi_{timestamp}_{unique_id}"
+        os.makedirs(output_dir, exist_ok=True)
+        
+        paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
+        
+        if len(paragraphs) == 0:
+            return None, None
+        
+        # Ensure we have at least 2 paragraphs for multi-voice
+        if len(paragraphs) == 1:
+            paragraphs = [paragraphs[0], paragraphs[0]]
+        
+        if len(paragraphs) > 10:
+            paragraphs = paragraphs[:10]
+            print(f"Processing {len(paragraphs)} paragraphs only for performance")
+        
+        async def generate_paragraph(paragraph, voice, index):
             if task_id and task_manager:
-                task_manager.update_task(task_id, progress=50, message="Transcribing audio...")
+                progress = int((index / len(paragraphs)) * 90)
+                task_manager.update_task(task_id, progress=progress, 
+                                       message=f"Processing paragraph {index+1}/{len(paragraphs)}")
             
-            result = await self.stt_processor.transcribe_audio(file_path, language)
+            return await self.generate_speech(paragraph, voice, rate, pitch, volume, clear_cache)
+        
+        audio_segments = []
+        all_subtitles = []
+        
+        for i, paragraph in enumerate(paragraphs):
+            voice = voice1 if i % 2 == 0 else voice2
+            temp_file, subs = await generate_paragraph(paragraph, voice, i)
+            
+            if temp_file and os.path.exists(temp_file):
+                try:
+                    audio = AudioSegment.from_file(temp_file)
+                    audio_segments.append(audio)
+                    
+                    current_time = sum(len(a) for a in audio_segments[:-1])
+                    for sub in subs:
+                        if isinstance(sub, dict):
+                            sub["start"] += current_time
+                            sub["end"] += current_time
+                            all_subtitles.append(sub)
+                    
+                    try:
+                        os.remove(temp_file)
+                    except:
+                        pass
+                except Exception as e:
+                    print(f"Error processing audio segment: {e}")
+        
+        if not audio_segments:
+            return None, None
+        
+        combined = AudioSegment.empty()
+        
+        for i, audio in enumerate(audio_segments):
+            audio = audio.fade_in(50).fade_out(50)
+            combined += audio
+            
+            if i < len(audio_segments) - 1:
+                combined += AudioSegment.silent(duration=pause)
+        
+        # Create unique output filename
+        output_timestamp = int(time.time())
+        random_suffix = random.randint(1000, 9999)
+        output_filename = f"multi_voice_{output_timestamp}_{random_suffix}.{output_format}"
+        output_file = os.path.join(output_dir, output_filename)
+        
+        combined.export(output_file, format=output_format, bitrate="192k")
+        
+        srt_file = None
+        if all_subtitles:
+            srt_filename = f"multi_voice_{output_timestamp}_{random_suffix}.srt"
+            srt_file = os.path.join(output_dir, srt_filename)
+            self.generate_srt(all_subtitles, output_file)
+        
+        if task_id and task_manager:
+            task_manager.update_task(task_id, progress=100, 
+                                   message="Multi-voice audio generation completed")
+        
+        return output_file, srt_file
+    
+    async def process_batch(self, files: List[UploadFile], voice_id: str, rate: int, pitch: int,
+                          volume: int, pause: int, output_format: str = "mp3", 
+                          task_id: str = None, clear_cache: bool = False):
+        self.cleanup_temp_files()
+        self.cache_manager.cleanup_old_cache(keep_count=30)
+        
+        # Create unique output directory
+        unique_id = uuid.uuid4().hex[:12]
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_dir = f"outputs/batch_{timestamp}_{unique_id}"
+        os.makedirs(output_dir, exist_ok=True)
+        
+        results = []
+        
+        for i, file in enumerate(files):
+            try:
+                if task_id and task_manager:
+                    progress = int((i / len(files)) * 90)
+                    task_manager.update_task(task_id, progress=progress, 
+                                           message=f"Processing file {i+1}/{len(files)}")
+                
+                # Read and decode file content
+                content = await file.read()
+                try:
+                    text = content.decode('utf-8')
+                except:
+                    # Try other encodings
+                    try:
+                        text = content.decode('utf-16')
+                    except:
+                        try:
+                            text = content.decode('latin-1')
+                        except:
+                            text = content.decode('utf-8', errors='ignore')
+                
+                # Clean filename
+                filename = file.filename.replace(' ', '_').replace('/', '_').replace('\\', '_')
+                filename_base = os.path.splitext(filename)[0]
+                
+                # Process each sentence
+                sentences = self.text_processor.split_sentences(text)
+                
+                if len(sentences) > 50:
+                    sentences = sentences[:50]
+                
+                audio_segments = []
+                all_subtitles = []
+                
+                for j in range(0, len(sentences), 2):
+                    batch = sentences[j:j+2]
+                    batch_text = ' '.join(batch)
+                    
+                    temp_file, subs = await self.generate_speech(batch_text, voice_id, rate, pitch, volume, clear_cache)
+                    
+                    if temp_file and os.path.exists(temp_file):
+                        try:
+                            audio = AudioSegment.from_file(temp_file)
+                            audio_segments.append(audio)
+                            
+                            current_time = sum(len(a) for a in audio_segments[:-1])
+                            for sub in subs:
+                                if isinstance(sub, dict):
+                                    sub["start"] += current_time
+                                    sub["end"] += current_time
+                                    all_subtitles.append(sub)
+                            
+                            try:
+                                os.remove(temp_file)
+                            except:
+                                pass
+                        except Exception as e:
+                            print(f"Error processing audio segment: {e}")
+                
+                if not audio_segments:
+                    continue
+                
+                combined = AudioSegment.empty()
+                
+                for k, audio in enumerate(audio_segments):
+                    audio = audio.fade_in(50).fade_out(50)
+                    combined += audio
+                    
+                    if k < len(audio_segments) - 1:
+                        combined += AudioSegment.silent(duration=pause)
+                
+                # Create unique output filename
+                file_timestamp = int(time.time())
+                file_suffix = random.randint(1000, 9999)
+                output_filename = f"{filename_base}_{file_timestamp}_{file_suffix}.{output_format}"
+                output_file = os.path.join(output_dir, output_filename)
+                
+                combined.export(output_file, format=output_format, bitrate="192k")
+                
+                srt_file = None
+                if all_subtitles:
+                    srt_filename = f"{filename_base}_{file_timestamp}_{file_suffix}.srt"
+                    srt_file = os.path.join(output_dir, srt_filename)
+                    self.generate_srt(all_subtitles, output_file)
+                
+                results.append({
+                    "original_filename": file.filename,
+                    "audio_file": output_filename,
+                    "srt_file": srt_filename if srt_file else None
+                })
+                
+            except Exception as e:
+                print(f"Error processing file {file.filename}: {e}")
+                continue
+        
+        # Create zip file if multiple files
+        if len(results) > 1:
+            zip_filename = f"batch_results_{timestamp}_{unique_id}.zip"
+            zip_path = os.path.join(output_dir, zip_filename)
+            
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                for result in results:
+                    audio_path = os.path.join(output_dir, result["audio_file"])
+                    if os.path.exists(audio_path):
+                        zipf.write(audio_path, result["audio_file"])
+                    
+                    if result["srt_file"]:
+                        srt_path = os.path.join(output_dir, result["srt_file"])
+                        if os.path.exists(srt_path):
+                            zipf.write(srt_path, result["srt_file"])
             
             if task_id and task_manager:
                 task_manager.update_task(task_id, progress=100, 
-                                       message="Transcription completed")
+                                       message="Batch processing completed")
             
-            # Save settings
-            self.settings["stt"] = {
-                "language": language,
-                "last_used": datetime.now().isoformat()
-            }
-            self.save_settings()
+            return zip_path, results
+        
+        elif len(results) == 1:
+            if task_id and task_manager:
+                task_manager.update_task(task_id, progress=100, 
+                                       message="Batch processing completed")
             
-            return {
-                "success": result["success"],
-                "text": result.get("text", ""),
-                "language": language,
-                "confidence": result.get("confidence", 0),
-                "duration": result.get("duration", 0),
-                "audio_url": f"/uploads/stt/{filename}" if result["success"] else None
-            }
+            output_file = os.path.join(output_dir, results[0]["audio_file"])
+            srt_file = os.path.join(output_dir, results[0]["srt_file"]) if results[0]["srt_file"] else None
             
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "text": ""
-            }
+            return output_file, srt_file
+        
+        else:
+            return None, None
     
     def cleanup_temp_files(self):
         try:
@@ -858,7 +951,7 @@ class TTSProcessor:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global tts_processor, task_manager
-    print("Starting up Professional TTS & STT Generator...")
+    print("Starting up TTS Generator...")
     
     tts_processor = TTSProcessor()
     task_manager = TaskManager()
@@ -878,8 +971,8 @@ async def lifespan(app: FastAPI):
 
 # ==================== FASTAPI APPLICATION ====================
 app = FastAPI(
-    title="Professional TTS & STT Generator", 
-    version="3.0.0",
+    title="Professional TTS Generator", 
+    version="2.0.0",
     lifespan=lifespan
 )
 
@@ -889,7 +982,6 @@ task_manager = None
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 # Templates
 templates = Jinja2Templates(directory="templates")
@@ -900,7 +992,6 @@ async def home(request: Request):
     return templates.TemplateResponse("index.html", {
         "request": request,
         "languages": TTSConfig.LANGUAGES,
-        "stt_languages": TTSConfig.STT_LANGUAGES,
         "formats": TTSConfig.OUTPUT_FORMATS
     })
 
@@ -920,6 +1011,7 @@ async def get_voices(language: str = None):
     
     return {"voices": voices}
 
+# ==================== SINGLE VOICE ====================
 @app.post("/api/generate/single")
 async def generate_single_voice(
     text: str = Form(...),
@@ -929,7 +1021,7 @@ async def generate_single_voice(
     volume: int = Form(100),
     pause: int = Form(500),
     output_format: str = Form("mp3"),
-    clear_cache: bool = Form(True)  # Always fresh by default
+    clear_cache: bool = Form(False)
 ):
     try:
         if not text.strip():
@@ -962,7 +1054,7 @@ async def generate_single_voice(
                         "success": True,
                         "audio_url": f"/download/{os.path.basename(audio_file)}",
                         "srt_url": f"/download/{os.path.basename(srt_file)}" if srt_file else None,
-                        "message": "Audio generated successfully (fresh audio)"
+                        "message": "Audio generated successfully" + (" (fresh)" if clear_cache else "")
                     }
                 else:
                     result = {
@@ -981,35 +1073,64 @@ async def generate_single_voice(
         return {
             "success": True,
             "task_id": task_id,
-            "message": "Audio generation started with fresh audio (no cache)."
+            "message": f"Audio generation started. {'Cache cleared for fresh audio.' if clear_cache else ''}"
         }
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/stt/transcribe")
-async def transcribe_audio(
-    audio_file: UploadFile = File(...),
-    language: str = Form("en-US")
+# ==================== MULTI VOICE ====================
+@app.post("/api/generate/multi")
+async def generate_multi_voice(
+    text: str = Form(...),
+    voice1: str = Form(...),
+    voice2: str = Form(...),
+    rate: int = Form(0),
+    pitch: int = Form(0),
+    volume: int = Form(100),
+    pause: int = Form(500),
+    output_format: str = Form("mp3"),
+    clear_cache: bool = Form(False)
 ):
     try:
-        if not audio_file:
-            raise HTTPException(status_code=400, detail="Audio file is required")
+        if not text.strip():
+            raise HTTPException(status_code=400, detail="Text is required")
         
-        # Check file type
-        allowed_extensions = ['.mp3', '.wav', '.m4a', '.ogg', '.flac', '.aac']
-        file_ext = os.path.splitext(audio_file.filename)[1].lower()
+        if not voice1 or not voice2:
+            raise HTTPException(status_code=400, detail="Both voices are required")
         
-        if file_ext not in allowed_extensions:
-            raise HTTPException(status_code=400, 
-                              detail=f"Unsupported file format. Allowed: {', '.join(allowed_extensions)}")
+        task_id = f"multi_{int(time.time())}_{random.randint(1000, 9999)}"
+        task_manager.create_task(task_id, "multi_voice")
         
-        task_id = f"stt_{int(time.time())}_{random.randint(1000, 9999)}"
-        task_manager.create_task(task_id, "speech_to_text")
+        tts_processor.settings["multi_voice"] = {
+            "voice1": voice1,
+            "voice2": voice2,
+            "rate": rate,
+            "pitch": pitch,
+            "volume": volume,
+            "pause": pause
+        }
+        tts_processor.save_settings()
         
         async def background_task():
             try:
-                result = await tts_processor.process_stt(audio_file, language, task_id)
+                audio_file, srt_file = await tts_processor.process_multi_voice(
+                    text, voice1, voice2, rate, pitch, volume, pause, 
+                    output_format, task_id, clear_cache
+                )
+                
+                if audio_file:
+                    result = {
+                        "success": True,
+                        "audio_url": f"/download/{os.path.basename(audio_file)}",
+                        "srt_url": f"/download/{os.path.basename(srt_file)}" if srt_file else None,
+                        "message": "Multi-voice audio generated successfully" + (" (fresh)" if clear_cache else "")
+                    }
+                else:
+                    result = {
+                        "success": False,
+                        "message": "Failed to generate multi-voice audio"
+                    }
                 
                 task_manager.update_task(task_id, status="completed", result=result)
                 
@@ -1022,12 +1143,91 @@ async def transcribe_audio(
         return {
             "success": True,
             "task_id": task_id,
-            "message": "Speech-to-text conversion started"
+            "message": f"Multi-voice audio generation started. {'Cache cleared for fresh audio.' if clear_cache else ''}"
         }
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# ==================== BATCH PROCESSING ====================
+@app.post("/api/generate/batch")
+async def generate_batch(
+    files: List[UploadFile] = File(...),
+    voice_id: str = Form(...),
+    rate: int = Form(0),
+    pitch: int = Form(0),
+    volume: int = Form(100),
+    pause: int = Form(500),
+    output_format: str = Form("mp3"),
+    clear_cache: bool = Form(False)
+):
+    try:
+        if not files:
+            raise HTTPException(status_code=400, detail="Files are required")
+        
+        if not voice_id:
+            raise HTTPException(status_code=400, detail="Voice is required")
+        
+        task_id = f"batch_{int(time.time())}_{random.randint(1000, 9999)}"
+        task_manager.create_task(task_id, "batch")
+        
+        tts_processor.settings["batch"] = {
+            "voice": voice_id,
+            "rate": rate,
+            "pitch": pitch,
+            "volume": volume,
+            "pause": pause
+        }
+        tts_processor.save_settings()
+        
+        async def background_task():
+            try:
+                result_file, srt_or_results = await tts_processor.process_batch(
+                    files, voice_id, rate, pitch, volume, pause, 
+                    output_format, task_id, clear_cache
+                )
+                
+                if result_file:
+                    if isinstance(srt_or_results, list):
+                        # Multiple files -> zip
+                        result = {
+                            "success": True,
+                            "zip_url": f"/download/{os.path.basename(result_file)}",
+                            "files": srt_or_results,
+                            "message": f"Batch processing completed. {len(srt_or_results)} files generated."
+                        }
+                    else:
+                        # Single file
+                        result = {
+                            "success": True,
+                            "audio_url": f"/download/{os.path.basename(result_file)}",
+                            "srt_url": f"/download/{os.path.basename(srt_or_results)}" if srt_or_results else None,
+                            "message": "Batch processing completed"
+                        }
+                else:
+                    result = {
+                        "success": False,
+                        "message": "Failed to process batch files"
+                    }
+                
+                task_manager.update_task(task_id, status="completed", result=result)
+                
+            except Exception as e:
+                task_manager.update_task(task_id, status="failed", 
+                                       message=f"Error: {str(e)}")
+        
+        asyncio.create_task(background_task())
+        
+        return {
+            "success": True,
+            "task_id": task_id,
+            "message": f"Batch processing started for {len(files)} files. {'Cache cleared for fresh audio.' if clear_cache else ''}"
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==================== COMMON ROUTES ====================
 @app.get("/api/task/{task_id}")
 async def get_task_status(task_id: str):
     task = task_manager.get_task(task_id)
@@ -1048,6 +1248,7 @@ async def get_task_status(task_id: str):
 async def download_file(filename: str):
     file_path = None
     
+    # Search for the file in outputs directory
     for root, dirs, files in os.walk("outputs"):
         if filename in files:
             file_path = os.path.join(root, filename)
@@ -1056,7 +1257,7 @@ async def download_file(filename: str):
     if not file_path or not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")
     
-    # ADD NO-CACHE HEADERS to prevent browser caching
+    # Add NO-CACHE headers to prevent browser caching
     file_timestamp = int(os.path.getmtime(file_path))
     
     return FileResponse(
@@ -1089,38 +1290,21 @@ async def cleanup_files():
 async def health_check():
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
-# WebSocket for real-time STT (optional)
-@app.websocket("/ws/stt")
-async def websocket_stt(websocket: WebSocket):
-    await websocket.accept()
-    try:
-        while True:
-            data = await websocket.receive_bytes()
-            # Process audio chunk
-            # This is a basic implementation - you'd need to implement streaming STT
-            await websocket.send_json({"type": "processing", "message": "Audio received"})
-    except Exception as e:
-        await websocket.close()
-
 # ==================== HTML TEMPLATE CREATION ====================
 def create_template_file():
-    template_content = """
-<!DOCTYPE html>
+    template_content = """<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Professional TTS & STT Generator</title>
+    <title>Professional TTS Generator</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
     <style>
         :root {
             --primary-color: #4361ee;
             --secondary-color: #3a0ca3;
             --success-color: #4cc9f0;
-            --warning-color: #f8961e;
-            --danger-color: #f72585;
             --light-bg: #f8f9fa;
             --dark-bg: #212529;
         }
@@ -1175,19 +1359,6 @@ def create_template_file():
         .btn-primary:hover {
             transform: translateY(-2px);
             box-shadow: 0 10px 20px rgba(67, 97, 238, 0.3);
-        }
-        
-        .btn-warning {
-            background: linear-gradient(135deg, var(--warning-color), #e76f51);
-            border: none;
-            padding: 0.75rem 2rem;
-            font-weight: 600;
-            transition: all 0.3s;
-        }
-        
-        .btn-warning:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 20px rgba(248, 150, 30, 0.3);
         }
         
         .loading-overlay {
@@ -1251,44 +1422,45 @@ def create_template_file():
             margin: 1rem 0;
         }
         
-        .record-btn {
-            width: 60px;
-            height: 60px;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 1.5rem;
-            transition: all 0.3s;
-            margin: 0 auto;
-        }
-        
-        .record-btn.recording {
-            animation: pulse 1.5s infinite;
-        }
-        
-        @keyframes pulse {
-            0% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0.7); }
-            70% { box-shadow: 0 0 0 15px rgba(220, 53, 69, 0); }
-            100% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0); }
-        }
-        
-        .waveform {
-            width: 100%;
-            height: 80px;
-            background: #f8f9fa;
+        .voice-pair {
+            background: linear-gradient(135deg, #f0f4ff, #e6f7ff);
             border-radius: 10px;
+            padding: 1rem;
             margin: 1rem 0;
-            position: relative;
-            overflow: hidden;
         }
         
-        .waveform-bar {
-            position: absolute;
-            bottom: 0;
-            width: 3px;
-            background: var(--primary-color);
-            border-radius: 2px;
+        .file-upload-area {
+            border: 2px dashed #dee2e6;
+            border-radius: 10px;
+            padding: 3rem;
+            text-align: center;
+            transition: all 0.3s;
+            cursor: pointer;
+        }
+        
+        .file-upload-area:hover {
+            border-color: var(--primary-color);
+            background: #f8f9ff;
+        }
+        
+        .file-upload-area.dragover {
+            border-color: var(--primary-color);
+            background: #eef2ff;
+        }
+        
+        .file-list {
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        
+        .file-item {
+            background: #f8f9fa;
+            border-radius: 5px;
+            padding: 0.5rem;
+            margin: 0.25rem 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }
         
         @media (max-width: 768px) {
@@ -1314,7 +1486,7 @@ def create_template_file():
         <div class="container">
             <a class="navbar-brand" href="/">
                 <i class="fas fa-microphone-alt me-2"></i>
-                Professional TTS & STT Generator v3.0
+                Professional TTS Generator v2.0
             </a>
         </div>
     </nav>
@@ -1325,12 +1497,17 @@ def create_template_file():
         <ul class="nav nav-tabs" id="ttsTabs" role="tablist">
             <li class="nav-item" role="presentation">
                 <button class="nav-link active" id="single-tab" data-bs-toggle="tab" data-bs-target="#single">
-                    <i class="fas fa-user me-2"></i>Single Voice TTS
+                    <i class="fas fa-user me-2"></i>Single Voice
                 </button>
             </li>
             <li class="nav-item" role="presentation">
-                <button class="nav-link" id="stt-tab" data-bs-toggle="tab" data-bs-target="#stt">
-                    <i class="fas fa-microphone me-2"></i>Speech to Text (STT)
+                <button class="nav-link" id="multi-tab" data-bs-toggle="tab" data-bs-target="#multi">
+                    <i class="fas fa-users me-2"></i>Multi-Voice
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="batch-tab" data-bs-toggle="tab" data-bs-target="#batch">
+                    <i class="fas fa-folder me-2"></i>Batch Processing
                 </button>
             </li>
         </ul>
@@ -1422,10 +1599,10 @@ def create_template_file():
                             <div class="form-check">
                                 <input class="form-check-input" type="checkbox" id="clearCacheSingle" checked>
                                 <label class="form-check-label" for="clearCacheSingle">
-                                    <i class="fas fa-sync-alt me-2"></i> Always Generate Fresh Audio
+                                    <i class="fas fa-sync-alt me-2"></i> Generate Fresh Audio
                                 </label>
                                 <small class="form-text text-muted d-block mt-1">
-                                    Prevents browser cache issues (recommended)
+                                    Always generate new audio (recommended)
                                 </small>
                             </div>
                         </div>
@@ -1462,85 +1639,293 @@ def create_template_file():
                 </div>
             </div>
             
-            <!-- Speech to Text Tab -->
-            <div class="tab-pane fade" id="stt">
+            <!-- Multi-Voice Tab -->
+            <div class="tab-pane fade" id="multi">
                 <div class="row">
-                    <div class="col-md-6">
-                        <div class="mb-4">
-                            <h5><i class="fas fa-microphone me-2"></i>Record Audio</h5>
-                            <div class="text-center">
-                                <button class="btn btn-danger record-btn mb-3" id="recordButton">
-                                    <i class="fas fa-microphone"></i>
-                                </button>
-                                <div class="waveform" id="waveform"></div>
-                                <p id="recordingStatus" class="text-muted">Click microphone to start recording</p>
-                                <div id="recordingTime" class="h5">00:00</div>
-                            </div>
-                            <button class="btn btn-warning w-100 mt-3" id="stopButton" disabled>
-                                <i class="fas fa-stop me-2"></i>Stop Recording
-                            </button>
-                        </div>
-                        
-                        <div class="mb-4">
-                            <h5><i class="fas fa-upload me-2"></i>Or Upload Audio File</h5>
-                            <div class="input-group">
-                                <input type="file" class="form-control" id="audioUpload" accept=".mp3,.wav,.m4a,.ogg,.flac,.aac">
-                                <button class="btn btn-outline-primary" type="button" onclick="uploadAudio()">
-                                    <i class="fas fa-upload me-2"></i>Upload
-                                </button>
-                            </div>
-                            <small class="text-muted">Supported formats: MP3, WAV, M4A, OGG, FLAC, AAC</small>
+                    <div class="col-md-8">
+                        <div class="mb-3">
+                            <label class="form-label">Text Content (Separate paragraphs with blank lines)</label>
+                            <textarea class="form-control" id="multiText" rows="8" 
+                                      placeholder="Paragraph 1 (will use Voice 1)...
+
+Paragraph 2 (will use Voice 2)...
+
+Paragraph 3 (will use Voice 1)...
+
+Continue alternating..."></textarea>
+                            <small class="text-muted">Each paragraph will alternate between Voice 1 and Voice 2</small>
                         </div>
                     </div>
-                    
-                    <div class="col-md-6">
+                    <div class="col-md-4">
                         <div class="mb-3">
-                            <label class="form-label">Language for Transcription</label>
-                            <select class="form-select" id="sttLanguage">
-                                {% for code, name in stt_languages.items() %}
-                                <option value="{{ code }}">{{ name }}</option>
+                            <label class="form-label">Language</label>
+                            <select class="form-select" id="multiLanguage">
+                                <option value="">Select Language</option>
+                                {% for language in languages %}
+                                <option value="{{ language }}">{{ language }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        
+                        <!-- Voice Pair -->
+                        <div class="voice-pair mb-3">
+                            <h6><i class="fas fa-user-friends me-2"></i>Voice Pair</h6>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label">Voice 1</label>
+                                        <select class="form-select" id="multiVoice1">
+                                            <option value="">Select Voice 1</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label">Voice 2</label>
+                                        <select class="form-select" id="multiVoice2">
+                                            <option value="">Select Voice 2</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Voice Settings -->
+                        <div class="accordion mb-3">
+                            <div class="accordion-item">
+                                <h2 class="accordion-header">
+                                    <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#multiSettings">
+                                        <i class="fas fa-sliders-h me-2"></i>Voice Settings
+                                    </button>
+                                </h2>
+                                <div id="multiSettings" class="accordion-collapse collapse show">
+                                    <div class="accordion-body">
+                                        <div class="mb-3">
+                                            <label class="form-label">
+                                                Speed: <span id="multiRateValue">0%</span>
+                                            </label>
+                                            <input type="range" class="form-range" id="multiRate" min="-30" max="30" value="0">
+                                        </div>
+                                        
+                                        <div class="mb-3">
+                                            <label class="form-label">
+                                                Pitch: <span id="multiPitchValue">0Hz</span>
+                                            </label>
+                                            <input type="range" class="form-range" id="multiPitch" min="-30" max="30" value="0">
+                                        </div>
+                                        
+                                        <div class="mb-3">
+                                            <label class="form-label">
+                                                Volume: <span id="multiVolumeValue">100%</span>
+                                            </label>
+                                            <input type="range" class="form-range" id="multiVolume" min="50" max="150" value="100">
+                                        </div>
+                                        
+                                        <div class="mb-3">
+                                            <label class="form-label">
+                                                Pause Duration: <span id="multiPauseValue">500ms</span>
+                                            </label>
+                                            <input type="range" class="form-range" id="multiPause" min="100" max="2000" value="500">
+                                        </div>
+                                        
+                                        <div class="mb-3">
+                                            <label class="form-label">Output Format</label>
+                                            <select class="form-select" id="multiFormat">
+                                                {% for format in formats %}
+                                                <option value="{{ format }}">{{ format|upper }}</option>
+                                                {% endfor %}
+                                            </select>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Generate Fresh Audio Option -->
+                        <div class="fresh-audio-check mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="clearCacheMulti" checked>
+                                <label class="form-check-label" for="clearCacheMulti">
+                                    <i class="fas fa-sync-alt me-2"></i> Generate Fresh Audio
+                                </label>
+                                <small class="form-text text-muted d-block mt-1">
+                                    Always generate new audio (recommended)
+                                </small>
+                            </div>
+                        </div>
+                        
+                        <button class="btn btn-primary w-100" onclick="generateMulti()">
+                            <i class="fas fa-users me-2"></i>Generate Multi-Voice Audio
+                        </button>
+                        
+                        <!-- Task Status -->
+                        <div class="task-status" id="multiTaskStatus">
+                            <div class="progress-container">
+                                <div class="progress">
+                                    <div class="progress-bar" id="multiProgressBar" style="width: 0%"></div>
+                                </div>
+                                <div class="text-center mt-2" id="multiProgressText">0%</div>
+                            </div>
+                            <div id="multiTaskMessage"></div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Output Section -->
+                <div class="output-card mt-4" id="multiOutput" style="display: none;">
+                    <h5><i class="fas fa-users me-2"></i>Multi-Voice Audio</h5>
+                    <div class="audio-player" id="multiAudioPlayer"></div>
+                    <div class="mt-3">
+                        <a href="#" class="btn btn-success me-2" id="multiDownloadAudio">
+                            <i class="fas fa-download me-2"></i>Download Audio
+                        </a>
+                        <a href="#" class="btn btn-info" id="multiDownloadSubtitle" style="display: none;">
+                            <i class="fas fa-file-alt me-2"></i>Download Subtitles
+                        </a>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Batch Processing Tab -->
+            <div class="tab-pane fade" id="batch">
+                <div class="row">
+                    <div class="col-md-8">
+                        <!-- File Upload Area -->
+                        <div class="mb-3">
+                            <label class="form-label">Upload Text Files (.txt)</label>
+                            <div class="file-upload-area" id="batchUploadArea">
+                                <i class="fas fa-cloud-upload-alt fa-3x text-muted mb-3"></i>
+                                <h5>Drag & Drop Files Here</h5>
+                                <p class="text-muted">or click to browse</p>
+                                <input type="file" id="batchFiles" class="d-none" multiple accept=".txt">
+                                <button class="btn btn-outline-primary mt-2" onclick="document.getElementById('batchFiles').click()">
+                                    <i class="fas fa-folder-open me-2"></i>Browse Files
+                                </button>
+                            </div>
+                            
+                            <!-- File List -->
+                            <div class="file-list mt-3" id="batchFileList" style="display: none;">
+                                <h6>Selected Files:</h6>
+                                <div id="batchFileItems"></div>
+                            </div>
+                        </div>
+                        
+                        <div class="alert alert-info">
+                            <i class="fas fa-info-circle me-2"></i>
+                            <strong>Note:</strong> Each text file will be processed separately. 
+                            For multiple files, a ZIP archive will be created containing all generated audio files.
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="mb-3">
+                            <label class="form-label">Language</label>
+                            <select class="form-select" id="batchLanguage">
+                                <option value="">Select Language</option>
+                                {% for language in languages %}
+                                <option value="{{ language }}">{{ language }}</option>
                                 {% endfor %}
                             </select>
                         </div>
                         
                         <div class="mb-3">
-                            <button class="btn btn-primary w-100 mb-2" onclick="transcribeAudio()" id="transcribeButton">
-                                <i class="fas fa-language me-2"></i>Transcribe Audio
-                            </button>
-                            <button class="btn btn-outline-secondary w-100" onclick="copyTranscript()" id="copyButton" style="display: none;">
-                                <i class="fas fa-copy me-2"></i>Copy Transcript
-                            </button>
+                            <label class="form-label">Voice</label>
+                            <select class="form-select" id="batchVoice">
+                                <option value="">Select Voice</option>
+                            </select>
                         </div>
+                        
+                        <!-- Voice Settings -->
+                        <div class="accordion mb-3">
+                            <div class="accordion-item">
+                                <h2 class="accordion-header">
+                                    <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#batchSettings">
+                                        <i class="fas fa-sliders-h me-2"></i>Voice Settings
+                                    </button>
+                                </h2>
+                                <div id="batchSettings" class="accordion-collapse collapse show">
+                                    <div class="accordion-body">
+                                        <div class="mb-3">
+                                            <label class="form-label">
+                                                Speed: <span id="batchRateValue">0%</span>
+                                            </label>
+                                            <input type="range" class="form-range" id="batchRate" min="-30" max="30" value="0">
+                                        </div>
+                                        
+                                        <div class="mb-3">
+                                            <label class="form-label">
+                                                Pitch: <span id="batchPitchValue">0Hz</span>
+                                            </label>
+                                            <input type="range" class="form-range" id="batchPitch" min="-30" max="30" value="0">
+                                        </div>
+                                        
+                                        <div class="mb-3">
+                                            <label class="form-label">
+                                                Volume: <span id="batchVolumeValue">100%</span>
+                                            </label>
+                                            <input type="range" class="form-range" id="batchVolume" min="50" max="150" value="100">
+                                        </div>
+                                        
+                                        <div class="mb-3">
+                                            <label class="form-label">
+                                                Pause Duration: <span id="batchPauseValue">500ms</span>
+                                            </label>
+                                            <input type="range" class="form-range" id="batchPause" min="100" max="2000" value="500">
+                                        </div>
+                                        
+                                        <div class="mb-3">
+                                            <label class="form-label">Output Format</label>
+                                            <select class="form-select" id="batchFormat">
+                                                {% for format in formats %}
+                                                <option value="{{ format }}">{{ format|upper }}</option>
+                                                {% endfor %}
+                                            </select>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Generate Fresh Audio Option -->
+                        <div class="fresh-audio-check mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="clearCacheBatch" checked>
+                                <label class="form-check-label" for="clearCacheBatch">
+                                    <i class="fas fa-sync-alt me-2"></i> Generate Fresh Audio
+                                </label>
+                                <small class="form-text text-muted d-block mt-1">
+                                    Always generate new audio (recommended)
+                                </small>
+                            </div>
+                        </div>
+                        
+                        <button class="btn btn-primary w-100" onclick="generateBatch()">
+                            <i class="fas fa-play-circle me-2"></i>Process Batch Files
+                        </button>
                         
                         <!-- Task Status -->
-                        <div class="task-status" id="sttTaskStatus">
+                        <div class="task-status" id="batchTaskStatus">
                             <div class="progress-container">
                                 <div class="progress">
-                                    <div class="progress-bar" id="sttProgressBar" style="width: 0%"></div>
+                                    <div class="progress-bar" id="batchProgressBar" style="width: 0%"></div>
                                 </div>
-                                <div class="text-center mt-2" id="sttProgressText">0%</div>
+                                <div class="text-center mt-2" id="batchProgressText">0%</div>
                             </div>
-                            <div id="sttTaskMessage"></div>
+                            <div id="batchTaskMessage"></div>
                         </div>
-                        
-                        <!-- Output Section -->
-                        <div class="output-card mt-4" id="sttOutput" style="display: none;">
-                            <h5><i class="fas fa-file-alt me-2"></i>Transcription Result</h5>
-                            <div class="mb-3">
-                                <textarea class="form-control" id="transcriptText" rows="6" readonly></textarea>
-                            </div>
-                            <div class="d-flex justify-content-between">
-                                <small class="text-muted" id="transcriptionInfo"></small>
-                                <div>
-                                    <button class="btn btn-sm btn-outline-primary me-2" onclick="clearTranscript()">
-                                        <i class="fas fa-trash me-1"></i>Clear
-                                    </button>
-                                    <button class="btn btn-sm btn-success" onclick="downloadTranscript()">
-                                        <i class="fas fa-download me-1"></i>Download
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
+                    </div>
+                </div>
+                
+                <!-- Output Section -->
+                <div class="output-card mt-4" id="batchOutput" style="display: none;">
+                    <h5><i class="fas fa-folder me-2"></i>Batch Processing Results</h5>
+                    <div id="batchResults"></div>
+                    <div class="mt-3">
+                        <a href="#" class="btn btn-success me-2" id="batchDownloadZip" style="display: none;">
+                            <i class="fas fa-file-archive me-2"></i>Download ZIP
+                        </a>
+                        <a href="#" class="btn btn-success me-2" id="batchDownloadAudio" style="display: none;">
+                            <i class="fas fa-download me-2"></i>Download Audio
+                        </a>
                     </div>
                 </div>
             </div>
@@ -1561,22 +1946,30 @@ def create_template_file():
         // Global variables
         let currentTaskId = null;
         let taskCheckInterval = null;
-        let currentAudioUrl = null;
-        
-        // STT Variables
-        let mediaRecorder = null;
-        let audioChunks = [];
-        let isRecording = false;
-        let recordingStartTime = null;
-        let recordingTimer = null;
+        let batchFiles = [];
         
         // Initialize
         document.addEventListener('DOMContentLoaded', async function() {
             await loadSettings();
-            await loadVoices();
+            await loadVoices('single');
+            await loadVoices('multi1');
+            await loadVoices('multi2');
+            await loadVoices('batch');
             initRangeDisplays();
+            initFileUpload();
             await cleanupOldFiles();
-            initSTT();
+            
+            // Set default values
+            document.getElementById('singleLanguage').value = 'Vietnamese';
+            document.getElementById('multiLanguage').value = 'Vietnamese';
+            document.getElementById('batchLanguage').value = 'Vietnamese';
+            
+            // Load voices for all languages
+            setTimeout(() => {
+                document.getElementById('singleLanguage').dispatchEvent(new Event('change'));
+                document.getElementById('multiLanguage').dispatchEvent(new Event('change'));
+                document.getElementById('batchLanguage').dispatchEvent(new Event('change'));
+            }, 500);
         });
         
         // Load settings
@@ -1585,38 +1978,73 @@ def create_template_file():
                 const response = await fetch('/api/settings');
                 const settings = await response.json();
                 
+                // Single voice settings
                 if (settings.single_voice) {
                     const sv = settings.single_voice;
                     document.getElementById('singleRate').value = sv.rate;
                     document.getElementById('singlePitch').value = sv.pitch;
                     document.getElementById('singleVolume').value = sv.volume;
                     document.getElementById('singlePause').value = sv.pause;
-                    
-                    ['singleRate', 'singlePitch', 'singleVolume', 'singlePause'].forEach(id => {
-                        document.getElementById(id).dispatchEvent(new Event('input'));
+                }
+                
+                // Multi voice settings
+                if (settings.multi_voice) {
+                    const mv = settings.multi_voice;
+                    document.getElementById('multiRate').value = mv.rate;
+                    document.getElementById('multiPitch').value = mv.pitch;
+                    document.getElementById('multiVolume').value = mv.volume;
+                    document.getElementById('multiPause').value = mv.pause;
+                }
+                
+                // Batch settings
+                if (settings.batch) {
+                    const bv = settings.batch;
+                    document.getElementById('batchRate').value = bv.rate;
+                    document.getElementById('batchPitch').value = bv.pitch;
+                    document.getElementById('batchVolume').value = bv.volume;
+                    document.getElementById('batchPause').value = bv.pause;
+                }
+                
+                // Trigger input events to update displays
+                ['single', 'multi', 'batch'].forEach(prefix => {
+                    ['Rate', 'Pitch', 'Volume', 'Pause'].forEach(suffix => {
+                        const id = prefix + suffix;
+                        const element = document.getElementById(id);
+                        if (element) {
+                            element.dispatchEvent(new Event('input'));
+                        }
                     });
-                }
-                
-                if (settings.stt && settings.stt.language) {
-                    document.getElementById('sttLanguage').value = settings.stt.language;
-                }
-                
-                const defaultLanguage = 'Vietnamese';
-                document.getElementById('singleLanguage').value = defaultLanguage;
+                });
                 
             } catch (error) {
                 console.error('Error loading settings:', error);
             }
         }
         
-        // Load voices for single voice
-        async function loadVoices() {
+        // Load voices
+        async function loadVoices(type) {
             try {
-                const language = document.getElementById('singleLanguage').value || 'Vietnamese';
+                let language, voiceSelect;
+                
+                if (type === 'single') {
+                    language = document.getElementById('singleLanguage').value || 'Vietnamese';
+                    voiceSelect = document.getElementById('singleVoice');
+                } else if (type === 'multi1') {
+                    language = document.getElementById('multiLanguage').value || 'Vietnamese';
+                    voiceSelect = document.getElementById('multiVoice1');
+                } else if (type === 'multi2') {
+                    language = document.getElementById('multiLanguage').value || 'Vietnamese';
+                    voiceSelect = document.getElementById('multiVoice2');
+                } else if (type === 'batch') {
+                    language = document.getElementById('batchLanguage').value || 'Vietnamese';
+                    voiceSelect = document.getElementById('batchVoice');
+                } else {
+                    return;
+                }
+                
                 const response = await fetch(`/api/voices?language=${encodeURIComponent(language)}`);
                 const data = await response.json();
                 
-                const voiceSelect = document.getElementById('singleVoice');
                 voiceSelect.innerHTML = '<option value="">Select Voice</option>';
                 
                 data.voices.forEach(voice => {
@@ -1626,10 +2054,22 @@ def create_template_file():
                     voiceSelect.appendChild(option);
                 });
                 
-                // Set default Vietnamese voice
-                const viVoice = data.voices.find(v => v.name === 'vi-VN-HoaiMyNeural');
-                if (viVoice) {
-                    voiceSelect.value = viVoice.name;
+                // Set default voices
+                if (type === 'single' || type === 'batch') {
+                    const viVoice = data.voices.find(v => v.name === 'vi-VN-HoaiMyNeural');
+                    if (viVoice) {
+                        voiceSelect.value = viVoice.name;
+                    }
+                } else if (type === 'multi1') {
+                    const viVoice = data.voices.find(v => v.name === 'vi-VN-HoaiMyNeural');
+                    if (viVoice) {
+                        voiceSelect.value = viVoice.name;
+                    }
+                } else if (type === 'multi2') {
+                    const viVoice = data.voices.find(v => v.name === 'vi-VN-NamMinhNeural');
+                    if (viVoice) {
+                        voiceSelect.value = viVoice.name;
+                    }
                 }
             } catch (error) {
                 console.error('Error loading voices:', error);
@@ -1638,57 +2078,139 @@ def create_template_file():
         
         // Initialize range displays
         function initRangeDisplays() {
-            const singleRanges = [
-                { id: 'singleRate', display: 'singleRateValue', suffix: '%' },
-                { id: 'singlePitch', display: 'singlePitchValue', suffix: 'Hz' },
-                { id: 'singleVolume', display: 'singleVolumeValue', suffix: '%' },
-                { id: 'singlePause', display: 'singlePauseValue', suffix: 'ms' }
+            const ranges = [
+                { prefix: 'single', suffix: 'Rate', display: 'singleRateValue', format: '%' },
+                { prefix: 'single', suffix: 'Pitch', display: 'singlePitchValue', format: 'Hz' },
+                { prefix: 'single', suffix: 'Volume', display: 'singleVolumeValue', format: '%' },
+                { prefix: 'single', suffix: 'Pause', display: 'singlePauseValue', format: 'ms' },
+                { prefix: 'multi', suffix: 'Rate', display: 'multiRateValue', format: '%' },
+                { prefix: 'multi', suffix: 'Pitch', display: 'multiPitchValue', format: 'Hz' },
+                { prefix: 'multi', suffix: 'Volume', display: 'multiVolumeValue', format: '%' },
+                { prefix: 'multi', suffix: 'Pause', display: 'multiPauseValue', format: 'ms' },
+                { prefix: 'batch', suffix: 'Rate', display: 'batchRateValue', format: '%' },
+                { prefix: 'batch', suffix: 'Pitch', display: 'batchPitchValue', format: 'Hz' },
+                { prefix: 'batch', suffix: 'Volume', display: 'batchVolumeValue', format: '%' },
+                { prefix: 'batch', suffix: 'Pause', display: 'batchPauseValue', format: 'ms' }
             ];
             
-            singleRanges.forEach(range => {
-                const input = document.getElementById(range.id);
+            ranges.forEach(range => {
+                const id = range.prefix + range.suffix;
+                const input = document.getElementById(id);
                 const display = document.getElementById(range.display);
                 
                 if (input && display) {
-                    display.textContent = input.value + range.suffix;
+                    display.textContent = input.value + range.format;
                     input.addEventListener('input', () => {
-                        display.textContent = input.value + range.suffix;
+                        display.textContent = input.value + range.format;
                     });
                 }
             });
         }
         
-        // Language change handler for single voice
+        // Language change handlers
         document.getElementById('singleLanguage').addEventListener('change', async function() {
-            const language = this.value;
-            if (language) {
-                try {
-                    const response = await fetch(`/api/voices?language=${encodeURIComponent(language)}`);
-                    const data = await response.json();
-                    
-                    const voiceSelect = document.getElementById('singleVoice');
-                    voiceSelect.innerHTML = '<option value="">Select Voice</option>';
-                    
-                    data.voices.forEach(voice => {
-                        const option = document.createElement('option');
-                        option.value = voice.name;
-                        option.textContent = `${voice.display} (${voice.gender})`;
-                        voiceSelect.appendChild(option);
-                    });
-                    
-                    if (data.voices.length > 0) {
-                        voiceSelect.value = data.voices[0].name;
-                    }
-                } catch (error) {
-                    console.error('Error loading voices:', error);
-                    showToast('Error loading voices for selected language', 'error');
-                }
-            }
+            await loadVoices('single');
         });
         
-        // RESET AUDIO PLAYER - CRITICAL for cache prevention
-        function resetAudioPlayer() {
-            const audioPlayer = document.getElementById('singleAudioPlayer');
+        document.getElementById('multiLanguage').addEventListener('change', async function() {
+            await loadVoices('multi1');
+            await loadVoices('multi2');
+        });
+        
+        document.getElementById('batchLanguage').addEventListener('change', async function() {
+            await loadVoices('batch');
+        });
+        
+        // Initialize file upload
+        function initFileUpload() {
+            const uploadArea = document.getElementById('batchUploadArea');
+            const fileInput = document.getElementById('batchFiles');
+            const fileList = document.getElementById('batchFileList');
+            const fileItems = document.getElementById('batchFileItems');
+            
+            // Click to upload
+            uploadArea.addEventListener('click', () => {
+                fileInput.click();
+            });
+            
+            // Drag and drop
+            uploadArea.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                uploadArea.classList.add('dragover');
+            });
+            
+            uploadArea.addEventListener('dragleave', () => {
+                uploadArea.classList.remove('dragover');
+            });
+            
+            uploadArea.addEventListener('drop', (e) => {
+                e.preventDefault();
+                uploadArea.classList.remove('dragover');
+                
+                if (e.dataTransfer.files.length > 0) {
+                    handleFiles(e.dataTransfer.files);
+                }
+            });
+            
+            // File input change
+            fileInput.addEventListener('change', (e) => {
+                if (e.target.files.length > 0) {
+                    handleFiles(e.target.files);
+                }
+            });
+            
+            // Handle selected files
+            function handleFiles(files) {
+                batchFiles = Array.from(files);
+                updateFileList();
+            }
+            
+            // Update file list display
+            function updateFileList() {
+                fileItems.innerHTML = '';
+                
+                if (batchFiles.length === 0) {
+                    fileList.style.display = 'none';
+                    return;
+                }
+                
+                batchFiles.forEach((file, index) => {
+                    const fileItem = document.createElement('div');
+                    fileItem.className = 'file-item';
+                    fileItem.innerHTML = `
+                        <div>
+                            <i class="fas fa-file-alt me-2"></i>
+                            ${file.name} (${formatFileSize(file.size)})
+                        </div>
+                        <button class="btn btn-sm btn-outline-danger" onclick="removeFile(${index})">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    `;
+                    fileItems.appendChild(fileItem);
+                });
+                
+                fileList.style.display = 'block';
+            }
+            
+            // Format file size
+            function formatFileSize(bytes) {
+                if (bytes === 0) return '0 Bytes';
+                const k = 1024;
+                const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+                const i = Math.floor(Math.log(bytes) / Math.log(k));
+                return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+            }
+            
+            // Make removeFile function globally available
+            window.removeFile = function(index) {
+                batchFiles.splice(index, 1);
+                updateFileList();
+            };
+        }
+        
+        // Reset audio player
+        function resetAudioPlayer(type) {
+            const audioPlayer = document.getElementById(`${type}AudioPlayer`);
             if (audioPlayer) {
                 // Stop all playing audio
                 const audios = audioPlayer.getElementsByTagName('audio');
@@ -1701,7 +2223,7 @@ def create_template_file():
                 audioPlayer.innerHTML = '';
             }
             // Hide output section
-            document.getElementById('singleOutput').style.display = 'none';
+            document.getElementById(`${type}Output`).style.display = 'none';
         }
         
         // Generate single voice audio
@@ -1726,8 +2248,8 @@ def create_template_file():
                 return;
             }
             
-            // RESET AUDIO PLAYER BEFORE GENERATION
-            resetAudioPlayer();
+            // Reset audio player before generating new audio
+            resetAudioPlayer('single');
             
             showLoading();
             
@@ -1752,13 +2274,137 @@ def create_template_file():
                 if (result.success) {
                     currentTaskId = result.task_id;
                     showTaskStatus('single', result.task_id);
-                    showToast('Audio generation started (fresh audio)');
+                    showToast('Audio generation started' + (clearCache ? ' (fresh audio)' : ''));
                 } else {
                     showToast(result.message || 'Generation failed', 'error');
                 }
             } catch (error) {
                 console.error('Error:', error);
                 showToast('Generation failed: ' + error.message, 'error');
+            } finally {
+                hideLoading();
+            }
+        }
+        
+        // Generate multi-voice audio
+        async function generateMulti() {
+            const text = document.getElementById('multiText').value.trim();
+            const voice1 = document.getElementById('multiVoice1').value;
+            const voice2 = document.getElementById('multiVoice2').value;
+            const language = document.getElementById('multiLanguage').value;
+            const clearCache = document.getElementById('clearCacheMulti').checked;
+            
+            if (!text) {
+                showToast('Please enter text', 'error');
+                return;
+            }
+            
+            if (!language) {
+                showToast('Please select a language', 'error');
+                return;
+            }
+            
+            if (!voice1 || !voice2) {
+                showToast('Please select both voices', 'error');
+                return;
+            }
+            
+            // Reset audio player before generating new audio
+            resetAudioPlayer('multi');
+            
+            showLoading();
+            
+            const formData = new FormData();
+            formData.append('text', text);
+            formData.append('voice1', voice1);
+            formData.append('voice2', voice2);
+            formData.append('rate', document.getElementById('multiRate').value);
+            formData.append('pitch', document.getElementById('multiPitch').value);
+            formData.append('volume', document.getElementById('multiVolume').value);
+            formData.append('pause', document.getElementById('multiPause').value);
+            formData.append('output_format', document.getElementById('multiFormat').value);
+            formData.append('clear_cache', clearCache);
+            
+            try {
+                const response = await fetch('/api/generate/multi', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    currentTaskId = result.task_id;
+                    showTaskStatus('multi', result.task_id);
+                    showToast('Multi-voice audio generation started' + (clearCache ? ' (fresh audio)' : ''));
+                } else {
+                    showToast(result.message || 'Generation failed', 'error');
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                showToast('Generation failed: ' + error.message, 'error');
+            } finally {
+                hideLoading();
+            }
+        }
+        
+        // Generate batch processing
+        async function generateBatch() {
+            const voice = document.getElementById('batchVoice').value;
+            const language = document.getElementById('batchLanguage').value;
+            const clearCache = document.getElementById('clearCacheBatch').checked;
+            
+            if (batchFiles.length === 0) {
+                showToast('Please select files to process', 'error');
+                return;
+            }
+            
+            if (!language) {
+                showToast('Please select a language', 'error');
+                return;
+            }
+            
+            if (!voice) {
+                showToast('Please select a voice', 'error');
+                return;
+            }
+            
+            showLoading();
+            
+            const formData = new FormData();
+            
+            // Add files
+            for (let file of batchFiles) {
+                formData.append('files', file);
+            }
+            
+            // Add other parameters
+            formData.append('voice_id', voice);
+            formData.append('rate', document.getElementById('batchRate').value);
+            formData.append('pitch', document.getElementById('batchPitch').value);
+            formData.append('volume', document.getElementById('batchVolume').value);
+            formData.append('pause', document.getElementById('batchPause').value);
+            formData.append('output_format', document.getElementById('batchFormat').value);
+            formData.append('clear_cache', clearCache);
+            
+            try {
+                const response = await fetch('/api/generate/batch', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    currentTaskId = result.task_id;
+                    showTaskStatus('batch', result.task_id);
+                    showToast(`Batch processing started for ${batchFiles.length} files` + (clearCache ? ' (fresh audio)' : ''));
+                } else {
+                    showToast(result.message || 'Batch processing failed', 'error');
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                showToast('Batch processing failed: ' + error.message, 'error');
             } finally {
                 hideLoading();
             }
@@ -1797,7 +2443,7 @@ def create_template_file():
                         if (task.result && task.result.success) {
                             showToast(task.result.message);
                             
-                            // Show output with CACHE BUSTER
+                            // Show output with cache buster
                             showOutput(type, task.result);
                         }
                         
@@ -1822,335 +2468,147 @@ def create_template_file():
         // Show output with CACHE BUSTER
         function showOutput(type, result) {
             const outputDiv = document.getElementById(`${type}Output`);
-            const audioPlayer = document.getElementById(`${type}AudioPlayer`);
-            const downloadAudio = document.getElementById(`${type}DownloadAudio`);
-            const downloadSubtitle = document.getElementById(`${type}DownloadSubtitle`);
+            const resultsDiv = document.getElementById(`${type}Results`);
             
-            // ADD CACHE BUSTER to URL - CRITICAL
-            const timestamp = new Date().getTime();
-            const random = Math.floor(Math.random() * 10000);
+            outputDiv.style.display = 'block';
             
-            // Create completely new audio element
-            const newAudio = document.createElement('audio');
-            newAudio.controls = true;
-            newAudio.className = 'w-100';
-            newAudio.preload = 'metadata';
-            
-            // Add cache buster to URL
-            const cacheBusterUrl = `${result.audio_url}?t=${timestamp}_${random}`;
-            const source = document.createElement('source');
-            source.src = cacheBusterUrl;
-            source.type = 'audio/mpeg';
-            
-            newAudio.appendChild(source);
-            newAudio.innerHTML += 'Your browser does not support the audio element.';
-            
-            // Remove old audio player and add new
-            audioPlayer.innerHTML = '';
-            audioPlayer.appendChild(newAudio);
-            
-            // FORCE RELOAD AUDIO
-            newAudio.load();
-            
-            // Add event to handle cache issues
-            newAudio.addEventListener('error', function() {
-                console.log('Audio loading error, retrying with new cache buster...');
-                const retryTimestamp = new Date().getTime();
-                const retryRandom = Math.floor(Math.random() * 10000);
-                source.src = `${result.audio_url}?t=${retryTimestamp}_${retryRandom}`;
+            if (type === 'batch') {
+                // Handle batch processing results
+                showBatchResults(result);
+            } else {
+                // Handle single/multi voice results
+                const audioPlayer = document.getElementById(`${type}AudioPlayer`);
+                const downloadAudio = document.getElementById(`${type}DownloadAudio`);
+                const downloadSubtitle = document.getElementById(`${type}DownloadSubtitle`);
+                
+                // Add cache buster to URL - IMPORTANT for preventing browser cache
+                const timestamp = new Date().getTime();
+                const random = Math.floor(Math.random() * 10000);
+                
+                // Create completely new audio element
+                const newAudio = document.createElement('audio');
+                newAudio.controls = true;
+                newAudio.className = 'w-100';
+                newAudio.preload = 'metadata';
+                
+                // Add cache buster to URL
+                const cacheBusterUrl = `${result.audio_url}?t=${timestamp}_${random}`;
+                const source = document.createElement('source');
+                source.src = cacheBusterUrl;
+                source.type = 'audio/mpeg';
+                
+                newAudio.appendChild(source);
+                newAudio.innerHTML += 'Your browser does not support the audio element.';
+                
+                // Remove old audio player and add new one
+                audioPlayer.innerHTML = '';
+                audioPlayer.appendChild(newAudio);
+                
+                // Force reload audio
                 newAudio.load();
-            });
-            
-            // Auto play new audio
-            setTimeout(() => {
-                try {
-                    newAudio.play().catch(e => console.log('Auto-play prevented:', e));
-                } catch (e) {
-                    console.log('Play error:', e);
-                }
-            }, 500);
-            
-            // Download link also with cache buster
-            downloadAudio.href = cacheBusterUrl;
-            downloadAudio.download = `tts_audio_${timestamp}.mp3`;
-            
-            if (result.srt_url) {
-                downloadSubtitle.href = result.srt_url;
-                downloadSubtitle.download = `tts_subtitle.srt`;
-                downloadSubtitle.style.display = 'inline-block';
-            } else {
-                downloadSubtitle.style.display = 'none';
-            }
-            
-            outputDiv.style.display = 'block';
-            
-            // Scroll to output
-            outputDiv.scrollIntoView({ behavior: 'smooth' });
-        }
-        
-        // ==================== STT FUNCTIONS ====================
-        function initSTT() {
-            // Check for browser support
-            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-                showToast('Your browser does not support audio recording', 'error');
-                document.getElementById('recordButton').disabled = true;
-                document.getElementById('recordButton').innerHTML = '<i class="fas fa-ban"></i>';
-            }
-            
-            // Initialize waveform
-            initWaveform();
-        }
-        
-        function initWaveform() {
-            const waveform = document.getElementById('waveform');
-            waveform.innerHTML = '';
-            
-            for (let i = 0; i < 100; i++) {
-                const bar = document.createElement('div');
-                bar.className = 'waveform-bar';
-                bar.style.left = `${i}%`;
-                bar.style.height = '0px';
-                waveform.appendChild(bar);
-            }
-        }
-        
-        function updateWaveform(level) {
-            const bars = document.querySelectorAll('.waveform-bar');
-            bars.forEach((bar, index) => {
-                const randomHeight = Math.random() * 60 + 20;
-                bar.style.height = `${randomHeight * (level / 100)}px`;
-            });
-        }
-        
-        async function startRecording() {
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({ 
-                    audio: {
-                        channelCount: 1,
-                        sampleRate: 16000,
-                        echoCancellation: true,
-                        noiseSuppression: true
-                    }
+                
+                // Add event to handle cache issues
+                newAudio.addEventListener('error', function() {
+                    console.log('Audio loading error, retrying with new cache buster...');
+                    const retryTimestamp = new Date().getTime();
+                    const retryRandom = Math.floor(Math.random() * 10000);
+                    source.src = `${result.audio_url}?t=${retryTimestamp}_${retryRandom}`;
+                    newAudio.load();
                 });
                 
-                mediaRecorder = new MediaRecorder(stream);
-                audioChunks = [];
-                
-                mediaRecorder.ondataavailable = (event) => {
-                    if (event.data.size > 0) {
-                        audioChunks.push(event.data);
+                // Auto play new audio
+                setTimeout(() => {
+                    try {
+                        newAudio.play().catch(e => console.log('Auto-play prevented:', e));
+                    } catch (e) {
+                        console.log('Play error:', e);
                     }
-                };
+                }, 500);
                 
-                mediaRecorder.onstop = () => {
-                    const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
-                    const audioUrl = URL.createObjectURL(audioBlob);
-                    
-                    // Create a temporary audio element to preview
-                    const previewAudio = new Audio(audioUrl);
-                    
-                    // Update UI
-                    document.getElementById('recordButton').classList.remove('recording');
-                    document.getElementById('recordButton').innerHTML = '<i class="fas fa-microphone"></i>';
-                    document.getElementById('recordButton').disabled = false;
-                    document.getElementById('stopButton').disabled = true;
-                    document.getElementById('recordingStatus').textContent = 'Recording stopped';
-                    document.getElementById('transcribeButton').disabled = false;
-                    
-                    // Store the blob for transcription
-                    window.recordedAudioBlob = audioBlob;
-                    
-                    showToast('Recording completed. Ready for transcription.');
-                };
+                // Download link also add cache buster
+                downloadAudio.href = cacheBusterUrl;
+                downloadAudio.download = `tts_${type}_audio_${timestamp}.mp3`;
                 
-                mediaRecorder.start();
-                isRecording = true;
-                
-                // Update UI
-                document.getElementById('recordButton').classList.add('recording');
-                document.getElementById('recordButton').innerHTML = '<i class="fas fa-stop"></i>';
-                document.getElementById('stopButton').disabled = false;
-                document.getElementById('recordingStatus').textContent = 'Recording...';
-                document.getElementById('recordingStatus').style.color = '#dc3545';
-                
-                // Start timer
-                recordingStartTime = Date.now();
-                updateRecordingTime();
-                recordingTimer = setInterval(updateRecordingTime, 1000);
-                
-                // Simulate waveform animation
-                const waveformInterval = setInterval(() => {
-                    if (isRecording) {
-                        updateWaveform(Math.random() * 100);
-                    } else {
-                        clearInterval(waveformInterval);
-                        initWaveform();
-                    }
-                }, 100);
-                
-                showToast('Recording started...', 'info');
-                
-            } catch (error) {
-                console.error('Error starting recording:', error);
-                showToast('Error accessing microphone: ' + error.message, 'error');
-            }
-        }
-        
-        function stopRecording() {
-            if (mediaRecorder && isRecording) {
-                mediaRecorder.stop();
-                isRecording = false;
-                
-                // Stop all tracks
-                mediaRecorder.stream.getTracks().forEach(track => track.stop());
-                
-                // Clear timer
-                clearInterval(recordingTimer);
-                document.getElementById('recordingTime').textContent = '00:00';
-            }
-        }
-        
-        function updateRecordingTime() {
-            if (recordingStartTime) {
-                const elapsed = Date.now() - recordingStartTime;
-                const seconds = Math.floor(elapsed / 1000);
-                const minutes = Math.floor(seconds / 60);
-                const displaySeconds = seconds % 60;
-                document.getElementById('recordingTime').textContent = 
-                    `${minutes.toString().padStart(2, '0')}:${displaySeconds.toString().padStart(2, '0')}`;
-            }
-        }
-        
-        async function uploadAudio() {
-            const fileInput = document.getElementById('audioUpload');
-            const file = fileInput.files[0];
-            
-            if (!file) {
-                showToast('Please select an audio file first', 'error');
-                return;
-            }
-            
-            // Validate file size (max 50MB)
-            if (file.size > 50 * 1024 * 1024) {
-                showToast('File size too large. Maximum 50MB.', 'error');
-                return;
-            }
-            
-            window.recordedAudioBlob = file;
-            document.getElementById('transcribeButton').disabled = false;
-            showToast('Audio file loaded. Ready for transcription.');
-        }
-        
-        async function transcribeAudio() {
-            if (!window.recordedAudioBlob) {
-                showToast('Please record or upload audio first', 'error');
-                return;
-            }
-            
-            const language = document.getElementById('sttLanguage').value;
-            
-            showLoading();
-            
-            const formData = new FormData();
-            formData.append('audio_file', window.recordedAudioBlob);
-            formData.append('language', language);
-            
-            try {
-                const response = await fetch('/api/stt/transcribe', {
-                    method: 'POST',
-                    body: formData
-                });
-                
-                const result = await response.json();
-                
-                if (result.success) {
-                    currentTaskId = result.task_id;
-                    showTaskStatus('stt', result.task_id);
-                    showToast('Transcription started...');
+                if (result.srt_url) {
+                    downloadSubtitle.href = result.srt_url;
+                    downloadSubtitle.download = `tts_${type}_subtitle.srt`;
+                    downloadSubtitle.style.display = 'inline-block';
                 } else {
-                    showToast(result.message || 'Transcription failed', 'error');
+                    downloadSubtitle.style.display = 'none';
                 }
-            } catch (error) {
-                console.error('Error:', error);
-                showToast('Transcription failed: ' + error.message, 'error');
-            } finally {
-                hideLoading();
             }
-        }
-        
-        function showSTTOutput(result) {
-            const outputDiv = document.getElementById('sttOutput');
-            const transcriptText = document.getElementById('transcriptText');
-            const transcriptionInfo = document.getElementById('transcriptionInfo');
-            const copyButton = document.getElementById('copyButton');
-            
-            transcriptText.value = result.text;
-            
-            const confidence = result.confidence * 100;
-            const duration = result.duration.toFixed(1);
-            
-            transcriptionInfo.innerHTML = `
-                <i class="fas fa-info-circle me-1"></i>
-                Confidence: <strong>${confidence.toFixed(1)}%</strong> | 
-                Duration: <strong>${duration}s</strong> | 
-                Language: <strong>${result.language}</strong>
-            `;
-            
-            copyButton.style.display = 'inline-block';
-            outputDiv.style.display = 'block';
             
             // Scroll to output
             outputDiv.scrollIntoView({ behavior: 'smooth' });
         }
         
-        function copyTranscript() {
-            const transcriptText = document.getElementById('transcriptText');
-            transcriptText.select();
-            document.execCommand('copy');
-            showToast('Transcript copied to clipboard!');
-        }
-        
-        function clearTranscript() {
-            document.getElementById('transcriptText').value = '';
-            document.getElementById('sttOutput').style.display = 'none';
-            window.recordedAudioBlob = null;
-            document.getElementById('audioUpload').value = '';
-            document.getElementById('transcribeButton').disabled = true;
-        }
-        
-        function downloadTranscript() {
-            const transcriptText = document.getElementById('transcriptText').value;
-            if (!transcriptText.trim()) {
-                showToast('No transcript to download', 'error');
-                return;
+        // Show batch processing results
+        function showBatchResults(result) {
+            const resultsDiv = document.getElementById('batchResults');
+            const downloadZip = document.getElementById('batchDownloadZip');
+            const downloadAudio = document.getElementById('batchDownloadAudio');
+            
+            resultsDiv.innerHTML = '';
+            
+            if (result.zip_url) {
+                // Multiple files -> show list and ZIP download
+                resultsDiv.innerHTML = `
+                    <div class="alert alert-success">
+                        <i class="fas fa-check-circle me-2"></i>
+                        Successfully processed ${result.files.length} files.
+                    </div>
+                    <div class="mt-3">
+                        <h6>Processed Files:</h6>
+                        <ul class="list-group">
+                            ${result.files.map(file => `
+                                <li class="list-group-item">
+                                    <i class="fas fa-file-alt me-2"></i>
+                                    ${file.original_filename}
+                                </li>
+                            `).join('')}
+                        </ul>
+                    </div>
+                `;
+                
+                // Add cache buster to ZIP URL
+                const timestamp = new Date().getTime();
+                const cacheBusterUrl = `${result.zip_url}?t=${timestamp}`;
+                
+                downloadZip.href = cacheBusterUrl;
+                downloadZip.download = `tts_batch_${timestamp}.zip`;
+                downloadZip.style.display = 'inline-block';
+                downloadAudio.style.display = 'none';
+                
+            } else if (result.audio_url) {
+                // Single file -> show audio player
+                resultsDiv.innerHTML = `
+                    <div class="alert alert-success">
+                        <i class="fas fa-check-circle me-2"></i>
+                        Successfully processed batch file.
+                    </div>
+                `;
+                
+                // Create audio player
+                const audioPlayer = document.createElement('div');
+                audioPlayer.className = 'audio-player';
+                audioPlayer.innerHTML = `
+                    <audio controls class="w-100">
+                        <source src="${result.audio_url}?t=${new Date().getTime()}" type="audio/mpeg">
+                        Your browser does not support the audio element.
+                    </audio>
+                `;
+                resultsDiv.appendChild(audioPlayer);
+                
+                // Add cache buster to audio URL
+                const timestamp = new Date().getTime();
+                const cacheBusterUrl = `${result.audio_url}?t=${timestamp}`;
+                
+                downloadAudio.href = cacheBusterUrl;
+                downloadAudio.download = `tts_batch_audio_${timestamp}.mp3`;
+                downloadAudio.style.display = 'inline-block';
+                downloadZip.style.display = 'none';
             }
-            
-            const timestamp = new Date().getTime();
-            const filename = `transcript_${timestamp}.txt`;
-            const blob = new Blob([transcriptText], { type: 'text/plain' });
-            const url = URL.createObjectURL(blob);
-            
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = filename;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-            
-            showToast('Transcript downloaded');
         }
-        
-        // Event listeners for STT
-        document.getElementById('recordButton').addEventListener('click', () => {
-            if (!isRecording) {
-                startRecording();
-            } else {
-                stopRecording();
-            }
-        });
-        
-        document.getElementById('stopButton').addEventListener('click', stopRecording);
         
         // Cleanup old files
         async function cleanupOldFiles() {
@@ -2175,11 +2633,9 @@ def create_template_file():
             const toastId = 'toast-' + Date.now();
             
             const colorClass = type === 'error' ? 'danger' : 
-                             type === 'warning' ? 'warning' : 
-                             type === 'info' ? 'info' : 'success';
+                             type === 'warning' ? 'warning' : 'success';
             const icon = type === 'error' ? 'fa-exclamation-circle' : 
-                        type === 'warning' ? 'fa-exclamation-triangle' : 
-                        type === 'info' ? 'fa-info-circle' : 'fa-check-circle';
+                        type === 'warning' ? 'fa-exclamation-triangle' : 'fa-check-circle';
             
             const toastHtml = `
                 <div id="${toastId}" class="toast align-items-center text-white bg-${colorClass} border-0" role="alert">
@@ -2204,8 +2660,7 @@ def create_template_file():
         }
     </script>
 </body>
-</html>
-"""
+</html>"""
     
     template_path = "templates/index.html"
     os.makedirs("templates", exist_ok=True)
@@ -2215,7 +2670,7 @@ def create_template_file():
     
     print(f"Template created at: {template_path}")
 
-# ==================== MAIN ENTRY POINT ====================
+# ==================== CREATE REQUIREMENTS FILE ====================
 def create_requirements_txt():
     requirements = """fastapi==0.104.1
 uvicorn[standard]==0.24.0
@@ -2224,9 +2679,6 @@ pydub==0.25.1
 webvtt-py==0.4.6
 natsort==8.4.0
 python-multipart==0.0.6
-SpeechRecognition==3.10.0
-numpy==1.24.3
-scipy==1.11.4
 """
     
     with open("requirements.txt", "w") as f:
@@ -2234,50 +2686,22 @@ scipy==1.11.4
     
     print("requirements.txt created")
 
-def create_runtime_txt():
-    runtime = "python-3.11.0"
-    
-    with open("runtime.txt", "w") as f:
-        f.write(runtime)
-    
-    print("runtime.txt created")
-
-def create_gunicorn_conf():
-    gunicorn_conf = """# gunicorn_config.py
-import multiprocessing
-
-bind = "0.0.0.0:10000"
-workers = 1
-worker_class = "uvicorn.workers.UvicornWorker"
-timeout = 120
-keepalive = 5
-"""
-    
-    with open("gunicorn_config.py", "w") as f:
-        f.write(gunicorn_conf)
-    
-    print("gunicorn_config.py created")
-
 # ==================== RUN APPLICATION ====================
 if __name__ == "__main__":
     create_requirements_txt()
-    create_runtime_txt()
-    create_gunicorn_conf()
     
     port = int(os.environ.get("PORT", 8000))
     
     print("=" * 60)
-    print("PROFESSIONAL TTS & STT GENERATOR v3.0")
+    print("PROFESSIONAL TTS GENERATOR v2.0")
     print("=" * 60)
     print(f"Server starting on port: {port}")
     print(f"Open http://localhost:{port} in your browser")
     print("Features:")
-    print("- 4 Tabs: Single Voice TTS, Multi-Voice TTS, Batch Processing, Speech-to-Text")
-    print("- Each Generate creates new audio file with unique name")
-    print("- Browser cache buster (timestamp + random)")
-    print("- Header no-cache for download")
-    print("- Speech-to-Text with recording and file upload")
-    print("- Auto cleanup old files")
+    print("1. Single Voice TTS")
+    print("2. Multi-Voice TTS (alternating voices)")
+    print("3. Batch Processing (multiple text files)")
+    print("4. Browser Cache Fix (unique filenames + cache busters)")
     print("=" * 60)
     
     uvicorn.run(
