@@ -9,6 +9,7 @@ import uuid
 import zipfile
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Form, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -181,7 +182,7 @@ class TTSConfig:
 class TaskManager:
     def __init__(self):
         self.tasks = {}
-        self.executor = ThreadPoolExecutor(max_workers=4)
+        self.executor = ThreadPoolExecutor(max_workers=2)  # Giảm workers cho Render
     
     def create_task(self, task_id: str, task_type: str):
         self.tasks[task_id] = {
@@ -698,14 +699,14 @@ class TextProcessor:
 class AudioCacheManager:
     def __init__(self):
         self.cache_dir = "audio_cache"
-        self.max_cache_size = 100  # Số file tối đa trong cache
+        self.max_cache_size = 50  # Giảm cache size cho Render
         os.makedirs(self.cache_dir, exist_ok=True)
     
     def get_cache_key(self, text: str, voice_id: str, rate: int, pitch: int, volume: int) -> str:
         """Tạo cache key từ các tham số"""
         import hashlib
         key_string = f"{text}_{voice_id}_{rate}_{pitch}_{volume}"
-        return hashlib.md5(key_string.encode()).hexdigest()
+        return hashlib.md5(key_string.encode()).hexdigest()[:12]  # Giới hạn độ dài
     
     def get_cached_audio(self, cache_key: str) -> Optional[str]:
         """Lấy file audio từ cache nếu tồn tại"""
@@ -728,7 +729,10 @@ class AudioCacheManager:
                     [os.path.join(self.cache_dir, f) for f in cache_files],
                     key=os.path.getmtime
                 )
-                os.remove(oldest_file)
+                try:
+                    os.remove(oldest_file)
+                except:
+                    pass
             
             cache_file = os.path.join(self.cache_dir, f"{cache_key}.mp3")
             shutil.copy(audio_file, cache_file)
@@ -740,7 +744,8 @@ class AudioCacheManager:
     def clear_cache(self):
         """Xóa toàn bộ cache"""
         try:
-            shutil.rmtree(self.cache_dir)
+            if os.path.exists(self.cache_dir):
+                shutil.rmtree(self.cache_dir)
             os.makedirs(self.cache_dir, exist_ok=True)
             return True
         except Exception as e:
@@ -830,9 +835,6 @@ class TTSProcessor:
                 # Tạo file tạm từ cache
                 temp_file = f"temp/cache_{uuid.uuid4().hex[:8]}.mp3"
                 shutil.copy(cached_file, temp_file)
-                
-                # Đọc audio để lấy subtitles (không có subtitle từ cache)
-                audio = AudioSegment.from_file(temp_file)
                 return temp_file, []
             
             # Tạo unique ID để tránh cache
@@ -842,7 +844,7 @@ class TTSProcessor:
             rate_str = f"{rate}%" if rate != 0 else "+0%"
             pitch_str = f"+{pitch}Hz" if pitch >= 0 else f"{pitch}Hz"
             
-            # Tạo communicate object với proxy để tránh cache
+            # Tạo communicate object
             communicate = edge_tts.Communicate(
                 text, 
                 voice_id, 
@@ -875,25 +877,28 @@ class TTSProcessor:
                 f.write(audio_data)
             
             # Xử lý audio
-            audio = AudioSegment.from_file(temp_file)
-            
-            # Điều chỉnh volume
-            volume_adjustment = min(max(volume - 100, -50), 10)
-            audio = audio + volume_adjustment
-            
-            # Áp dụng các hiệu ứng audio
-            audio = normalize(audio)
-            audio = compress_dynamic_range(audio, threshold=-20.0, ratio=4.0)
-            audio = low_pass_filter(audio, 14000)
-            audio = high_pass_filter(audio, 100)
-            
-            # Xuất với chất lượng cao
-            audio.export(temp_file, format="mp3", bitrate="320k", parameters=["-ar", "44100"])
-            
-            # Lưu vào cache
-            self.cache_manager.save_to_cache(cache_key, temp_file)
-            
-            return temp_file, subtitles
+            try:
+                audio = AudioSegment.from_file(temp_file)
+                
+                # Điều chỉnh volume
+                volume_adjustment = min(max(volume - 100, -50), 10)
+                audio = audio + volume_adjustment
+                
+                # Áp dụng các hiệu ứng audio cơ bản
+                audio = normalize(audio)
+                audio = compress_dynamic_range(audio, threshold=-20.0, ratio=4.0)
+                
+                # Xuất với chất lượng cao
+                audio.export(temp_file, format="mp3", bitrate="256k")
+                
+                # Lưu vào cache
+                self.cache_manager.save_to_cache(cache_key, temp_file)
+                
+                return temp_file, subtitles
+            except Exception as e:
+                print(f"Error processing audio: {e}")
+                # Trả về file gốc nếu xử lý lỗi
+                return temp_file, subtitles
             
         except Exception as e:
             print(f"Error generating speech: {e}")
@@ -934,13 +939,13 @@ class TTSProcessor:
         sentences = self.text_processor.split_sentences(text)
         
         # Giới hạn số lượng câu để xử lý nhanh hơn
-        MAX_SENTENCES = 100
+        MAX_SENTENCES = 50  # Giảm cho Render
         if len(sentences) > MAX_SENTENCES:
             sentences = sentences[:MAX_SENTENCES]
             print(f"Processing {MAX_SENTENCES} sentences only for performance")
         
         # Tạo semaphore để giới hạn concurrent requests
-        SEMAPHORE = asyncio.Semaphore(3)
+        SEMAPHORE = asyncio.Semaphore(2)  # Giảm concurrent requests
         
         async def bounded_generate(sentence, index):
             async with SEMAPHORE:
@@ -956,8 +961,8 @@ class TTSProcessor:
         audio_segments = []
         all_subtitles = []
         
-        for i in range(0, len(sentences), 3):  # Batch size = 3
-            batch = sentences[i:i+3]
+        for i in range(0, len(sentences), 2):  # Batch size = 2 (giảm cho Render)
+            batch = sentences[i:i+2]
             batch_tasks = [bounded_generate(s, i+j) for j, s in enumerate(batch)]
             batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
             
@@ -1003,7 +1008,7 @@ class TTSProcessor:
         
         # Xuất file audio
         output_file = os.path.join(output_dir, f"single_voice.{output_format}")
-        combined.export(output_file, format=output_format, bitrate="256k")
+        combined.export(output_file, format=output_format, bitrate="192k")  # Giảm bitrate
         
         # Tạo file subtitle
         srt_file = self.generate_srt(all_subtitles, output_file)
@@ -1049,6 +1054,11 @@ class TTSProcessor:
         if not dialogues:
             return None, None
         
+        # Giới hạn số dialogues
+        MAX_DIALOGUES = 20
+        if len(dialogues) > MAX_DIALOGUES:
+            dialogues = dialogues[:MAX_DIALOGUES]
+        
         # Tạo audio cho mỗi dialogue
         audio_segments = []
         all_subtitles = []
@@ -1090,7 +1100,7 @@ class TTSProcessor:
         # Kết hợp với repetition
         combined = AudioSegment.empty()
         
-        for rep in range(repeat):
+        for rep in range(min(repeat, 2)):  # Giới hạn repeat
             if task_id and task_manager:
                 task_manager.update_task(task_id, message=f"Combining repetition {rep+1}/{repeat}")
             
@@ -1100,12 +1110,12 @@ class TTSProcessor:
                 if i < len(audio_segments) - 1:
                     combined += AudioSegment.silent(duration=pause)
             
-            if rep < repeat - 1:
+            if rep < min(repeat, 2) - 1:
                 combined += AudioSegment.silent(duration=pause * 2)
         
         # Xuất file
         output_file = os.path.join(output_dir, f"multi_voice.{output_format}")
-        combined.export(output_file, format=output_format, bitrate="256k")
+        combined.export(output_file, format=output_format, bitrate="192k")
         
         # Tạo SRT với speaker labels
         if all_subtitles:
@@ -1165,6 +1175,11 @@ class TTSProcessor:
         if not dialogues:
             return None, None
         
+        # Giới hạn số dialogues
+        MAX_DIALOGUES = 10
+        if len(dialogues) > MAX_DIALOGUES:
+            dialogues = dialogues[:MAX_DIALOGUES]
+        
         # Tạo audio
         audio_segments = []
         all_subtitles = []
@@ -1206,7 +1221,7 @@ class TTSProcessor:
         # Kết hợp với repetition
         combined = AudioSegment.empty()
         
-        for rep in range(repeat):
+        for rep in range(min(repeat, 2)):  # Giới hạn repeat
             if task_id and task_manager:
                 task_manager.update_task(task_id, message=f"Combining repetition {rep+1}/{repeat}")
             
@@ -1216,12 +1231,12 @@ class TTSProcessor:
                 if i < len(audio_segments) - 1:
                     combined += AudioSegment.silent(duration=pause)
             
-            if rep < repeat - 1:
+            if rep < min(repeat, 2) - 1:
                 combined += AudioSegment.silent(duration=pause_a * 2)
         
         # Xuất file
         output_file = os.path.join(output_dir, f"qa_dialogue.{output_format}")
-        combined.export(output_file, format=output_format, bitrate="256k")
+        combined.export(output_file, format=output_format, bitrate="192k")
         
         # Tạo SRT
         if all_subtitles:
@@ -1272,19 +1287,51 @@ class TTSProcessor:
                     if os.path.isdir(folder_path):
                         folder_age = now - os.path.getmtime(folder_path)
                         if folder_age > hours_old * 3600:
-                            shutil.rmtree(folder_path)
+                            try:
+                                shutil.rmtree(folder_path)
+                            except:
+                                pass
         except Exception as e:
             print(f"Error cleaning old outputs: {e}")
 
+# ==================== LIFESPAN MANAGER ====================
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan event handler thay thế cho on_event"""
+    # Startup
+    print("Starting up TTS Generator...")
+    
+    # Initialize TTS processor
+    global tts_processor, task_manager
+    tts_processor = TTSProcessor()
+    task_manager = TaskManager()
+    
+    # Cleanup old files on startup
+    tts_processor.cleanup_temp_files()
+    tts_processor.cleanup_old_outputs(24)
+    task_manager.cleanup_old_tasks(1)
+    
+    # Create template file if not exists
+    create_template_file()
+    
+    yield
+    
+    # Shutdown
+    print("Shutting down TTS Generator...")
+    tts_processor.cleanup_temp_files()
+    if hasattr(task_manager, 'executor'):
+        task_manager.executor.shutdown(wait=False)
+
 # ==================== FASTAPI APPLICATION ====================
-app = FastAPI(title="Professional TTS Generator", version="2.0.0")
+app = FastAPI(
+    title="Professional TTS Generator", 
+    version="2.0.0",
+    lifespan=lifespan  # Sử dụng lifespan thay vì on_event
+)
 
-# Initialize components
-tts_processor = TTSProcessor()
-task_manager = TaskManager()
-
-# Create necessary directories
-tts_processor.initialize_directories()
+# Global instances (sẽ được khởi tạo trong lifespan)
+tts_processor = None
+task_manager = None
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -1650,14 +1697,6 @@ async def cleanup_all():
         # Xóa task cache
         task_manager.tasks.clear()
         
-        # Xóa edge-tts cache
-        cache_dir = os.path.expanduser("~/.cache/edge-tts")
-        if os.path.exists(cache_dir):
-            try:
-                shutil.rmtree(cache_dir)
-            except:
-                pass
-        
         return {
             "success": True, 
             "message": "All cache and temporary files cleared"
@@ -1665,23 +1704,11 @@ async def cleanup_all():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ==================== STARTUP AND SHUTDOWN ====================
-@app.on_event("startup")
-async def startup_event():
-    """Startup tasks"""
-    # Cleanup old files on startup
-    tts_processor.cleanup_temp_files()
-    tts_processor.cleanup_old_outputs(24)  # 24 hours
-    task_manager.cleanup_old_tasks(1)
-    
-    # Create template file if not exists
-    create_template_file()
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Shutdown tasks"""
-    # Cleanup temp files on shutdown
-    tts_processor.cleanup_temp_files()
+# Health check endpoint for Render
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
 # ==================== HTML TEMPLATE CREATION ====================
 def create_template_file():
@@ -1801,6 +1828,29 @@ def create_template_file():
             margin: 1rem 0;
             display: none;
         }
+        
+        .output-card {
+            background: linear-gradient(135deg, #f8f9fa, #e9ecef);
+            border-radius: 10px;
+            padding: 1.5rem;
+            margin-top: 2rem;
+        }
+        
+        @media (max-width: 768px) {
+            .nav-tabs .nav-link {
+                padding: 0.75rem 1rem;
+                font-size: 0.9rem;
+            }
+            
+            .tab-content {
+                padding: 1rem;
+            }
+            
+            .main-container {
+                margin: 1rem;
+                border-radius: 15px;
+            }
+        }
     </style>
 </head>
 <body>
@@ -1851,8 +1901,9 @@ def create_template_file():
                     <div class="col-md-8">
                         <div class="mb-3">
                             <label class="form-label">Text Content</label>
-                            <textarea class="form-control" id="singleText" rows="10" 
+                            <textarea class="form-control" id="singleText" rows="8" 
                                       placeholder="Enter your text here..."></textarea>
+                            <small class="text-muted">Maximum 50 sentences for optimal performance</small>
                         </div>
                     </div>
                     <div class="col-md-4">
@@ -1962,13 +2013,40 @@ def create_template_file():
                     <div class="col-md-8">
                         <div class="mb-3">
                             <label class="form-label">Dialogue Content</label>
-                            <textarea class="form-control" id="multiText" rows="10" 
+                            <textarea class="form-control" id="multiText" rows="8" 
                                       placeholder="CHAR1: Dialogue for character 1&#10;CHAR2: Dialogue for character 2&#10;NARRATOR: Narration text"></textarea>
+                            <small class="text-muted">Use CHAR1:, CHAR2:, or NARRATOR: prefixes. Maximum 20 dialogues.</small>
                         </div>
-                    </div>
-                    <div class="col-md-4">
-                        <!-- Character Settings and Generate Button -->
-                        <button class="btn btn-primary w-100 mb-3" onclick="generateMulti()">
+                        
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">Character 1 Voice</label>
+                                    <select class="form-select" id="multiChar1Voice">
+                                        <option value="vi-VN-HoaiMyNeural">Hoài My (Nữ)</option>
+                                        <option value="vi-VN-NamMinhNeural">Nam Minh (Nam)</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">Character 2 Voice</label>
+                                    <select class="form-select" id="multiChar2Voice">
+                                        <option value="vi-VN-NamMinhNeural">Nam Minh (Nam)</option>
+                                        <option value="vi-VN-HoaiMyNeural">Hoài My (Nữ)</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">
+                                Pause Between Dialogues: <span id="multiPauseValue">500ms</span>
+                            </label>
+                            <input type="range" class="form-range" id="multiPause" min="100" max="2000" value="500">
+                        </div>
+                        
+                        <button class="btn btn-primary w-100" onclick="generateMulti()">
                             <i class="fas fa-users me-2"></i>Generate Multi-Voice Audio
                         </button>
                         
@@ -1992,13 +2070,33 @@ def create_template_file():
                     <div class="col-md-8">
                         <div class="mb-3">
                             <label class="form-label">Q&A Content</label>
-                            <textarea class="form-control" id="qaText" rows="10" 
+                            <textarea class="form-control" id="qaText" rows="8" 
                                       placeholder="Q: Question text&#10;A: Answer text&#10;Q: Next question&#10;A: Next answer"></textarea>
+                            <small class="text-muted">Use Q: for questions and A: for answers. Maximum 10 Q&A pairs.</small>
                         </div>
-                    </div>
-                    <div class="col-md-4">
-                        <!-- Generate Button -->
-                        <button class="btn btn-primary w-100 mb-3" onclick="generateQA()">
+                        
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">Question Voice</label>
+                                    <select class="form-select" id="qaQuestionVoice">
+                                        <option value="vi-VN-HoaiMyNeural">Hoài My (Nữ)</option>
+                                        <option value="vi-VN-NamMinhNeural">Nam Minh (Nam)</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">Answer Voice</label>
+                                    <select class="form-select" id="qaAnswerVoice">
+                                        <option value="vi-VN-NamMinhNeural">Nam Minh (Nam)</option>
+                                        <option value="vi-VN-HoaiMyNeural">Hoài My (Nữ)</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <button class="btn btn-primary w-100" onclick="generateQA()">
                             <i class="fas fa-comments me-2"></i>Generate Q&A Audio
                         </button>
                         
@@ -2079,6 +2177,10 @@ def create_template_file():
                         document.getElementById(id).dispatchEvent(new Event('input'));
                     });
                 }
+                
+                // Set default language
+                document.getElementById('singleLanguage').value = 'Tiếng Việt';
+                
             } catch (error) {
                 console.error('Error loading settings:', error);
             }
@@ -2087,7 +2189,7 @@ def create_template_file():
         // Load voices
         async function loadVoices() {
             try {
-                const response = await fetch('/api/voices');
+                const response = await fetch('/api/voices?language=Tiếng Việt');
                 const data = await response.json();
                 
                 const voiceSelect = document.getElementById('singleVoice');
@@ -2116,7 +2218,8 @@ def create_template_file():
                 { id: 'singleRate', display: 'singleRateValue', suffix: '%' },
                 { id: 'singlePitch', display: 'singlePitchValue', suffix: 'Hz' },
                 { id: 'singleVolume', display: 'singleVolumeValue', suffix: '%' },
-                { id: 'singlePause', display: 'singlePauseValue', suffix: 'ms' }
+                { id: 'singlePause', display: 'singlePauseValue', suffix: 'ms' },
+                { id: 'multiPause', display: 'multiPauseValue', suffix: 'ms' }
             ];
             
             ranges.forEach(range => {
@@ -2187,28 +2290,29 @@ def create_template_file():
         // Generate multi-voice audio
         async function generateMulti() {
             const text = document.getElementById('multiText').value.trim();
+            const char1Voice = document.getElementById('multiChar1Voice').value;
+            const char2Voice = document.getElementById('multiChar2Voice').value;
             
             if (!text) {
                 showToast('Please enter dialogue text', 'error');
                 return;
             }
             
-            // For simplicity, using default settings
             showLoading();
             
             const formData = new FormData();
             formData.append('text', text);
             formData.append('char1_language', 'Tiếng Việt');
-            formData.append('char1_voice', 'vi-VN-HoaiMyNeural');
+            formData.append('char1_voice', char1Voice);
             formData.append('char1_rate', 0);
             formData.append('char1_pitch', 0);
             formData.append('char1_volume', 100);
             formData.append('char2_language', 'Tiếng Việt');
-            formData.append('char2_voice', 'vi-VN-NamMinhNeural');
+            formData.append('char2_voice', char2Voice);
             formData.append('char2_rate', -10);
             formData.append('char2_pitch', 0);
             formData.append('char2_volume', 100);
-            formData.append('pause', 500);
+            formData.append('pause', document.getElementById('multiPause').value);
             formData.append('repeat', 1);
             formData.append('output_format', 'mp3');
             
@@ -2238,6 +2342,8 @@ def create_template_file():
         // Generate Q&A audio
         async function generateQA() {
             const text = document.getElementById('qaText').value.trim();
+            const questionVoice = document.getElementById('qaQuestionVoice').value;
+            const answerVoice = document.getElementById('qaAnswerVoice').value;
             
             if (!text) {
                 showToast('Please enter Q&A text', 'error');
@@ -2249,12 +2355,12 @@ def create_template_file():
             const formData = new FormData();
             formData.append('text', text);
             formData.append('question_language', 'Tiếng Việt');
-            formData.append('question_voice', 'vi-VN-HoaiMyNeural');
+            formData.append('question_voice', questionVoice);
             formData.append('question_rate', 0);
             formData.append('question_pitch', 0);
             formData.append('question_volume', 100);
             formData.append('answer_language', 'Tiếng Việt');
-            formData.append('answer_voice', 'vi-VN-NamMinhNeural');
+            formData.append('answer_voice', answerVoice);
             formData.append('answer_rate', -10);
             formData.append('answer_pitch', 0);
             formData.append('answer_volume', 100);
@@ -2341,7 +2447,7 @@ def create_template_file():
                 } catch (error) {
                     console.error('Error checking task status:', error);
                 }
-            }, 1000);
+            }, 2000); // Poll every 2 seconds
         }
         
         // Show single voice output
@@ -2363,15 +2469,20 @@ def create_template_file():
             `;
             
             downloadAudio.href = result.audio_url;
+            downloadAudio.download = "tts_audio.mp3";
             
             if (result.srt_url) {
                 downloadSubtitle.href = result.srt_url;
+                downloadSubtitle.download = "tts_subtitle.srt";
                 downloadSubtitle.style.display = 'inline-block';
             } else {
                 downloadSubtitle.style.display = 'none';
             }
             
             outputDiv.style.display = 'block';
+            
+            // Scroll to output
+            outputDiv.scrollIntoView({ behavior: 'smooth' });
         }
         
         // Cleanup old files
@@ -2407,8 +2518,24 @@ def create_template_file():
         
         // Refresh tasks list
         async function refreshTasks() {
-            // This would normally fetch from an API endpoint that lists all tasks
-            showToast('Task list refreshed');
+            try {
+                const tasksList = document.getElementById('tasksList');
+                tasksList.innerHTML = '<div class="text-center"><div class="spinner-border"></div></div>';
+                
+                // This is a simple implementation
+                // In a real app, you would fetch tasks from an API
+                setTimeout(() => {
+                    tasksList.innerHTML = `
+                        <div class="text-center text-muted py-4">
+                            <i class="fas fa-clock fa-2x mb-3"></i>
+                            <p>No active tasks</p>
+                        </div>
+                    `;
+                    showToast('Task list refreshed');
+                }, 1000);
+            } catch (error) {
+                console.error('Error refreshing tasks:', error);
+            }
         }
         
         // Utility functions
@@ -2424,11 +2551,16 @@ def create_template_file():
             const toastContainer = document.querySelector('.toast-container');
             const toastId = 'toast-' + Date.now();
             
+            const colorClass = type === 'error' ? 'danger' : 
+                             type === 'warning' ? 'warning' : 'success';
+            const icon = type === 'error' ? 'fa-exclamation-circle' : 
+                        type === 'warning' ? 'fa-exclamation-triangle' : 'fa-check-circle';
+            
             const toastHtml = `
-                <div id="${toastId}" class="toast align-items-center text-white bg-${type === 'error' ? 'danger' : 'success'} border-0" role="alert">
+                <div id="${toastId}" class="toast align-items-center text-white bg-${colorClass} border-0" role="alert">
                     <div class="d-flex">
                         <div class="toast-body">
-                            <i class="fas ${type === 'error' ? 'fa-exclamation-circle' : 'fa-check-circle'} me-2"></i>
+                            <i class="fas ${icon} me-2"></i>
                             ${message}
                         </div>
                         <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
@@ -2445,6 +2577,30 @@ def create_template_file():
                 toastElement.remove();
             });
         }
+        
+        // Language change handler
+        document.getElementById('singleLanguage').addEventListener('change', async function() {
+            const language = this.value;
+            if (language) {
+                try {
+                    const response = await fetch(`/api/voices?language=${encodeURIComponent(language)}`);
+                    const data = await response.json();
+                    
+                    const voiceSelect = document.getElementById('singleVoice');
+                    voiceSelect.innerHTML = '<option value="">Select Voice</option>';
+                    
+                    data.voices.forEach(voice => {
+                        const option = document.createElement('option');
+                        option.value = voice.name;
+                        option.textContent = `${voice.display} (${voice.gender})`;
+                        voiceSelect.appendChild(option);
+                    });
+                } catch (error) {
+                    console.error('Error loading voices:', error);
+                    showToast('Error loading voices for selected language', 'error');
+                }
+            }
+        });
     </script>
 </body>
 </html>
@@ -2459,13 +2615,56 @@ def create_template_file():
     print(f"Template created at: {template_path}")
 
 # ==================== MAIN ENTRY POINT ====================
+def create_requirements_txt():
+    """Create requirements.txt file"""
+    requirements = """fastapi==0.104.1
+uvicorn[standard]==0.24.0
+edge-tts==6.1.9
+pydub==0.25.1
+webvtt-py==0.4.6
+natsort==8.4.0
+python-multipart==0.0.6
+"""
+    
+    with open("requirements.txt", "w") as f:
+        f.write(requirements)
+    
+    print("requirements.txt created")
+
+def create_runtime_txt():
+    """Create runtime.txt for Python version"""
+    runtime = "python-3.11.0"
+    
+    with open("runtime.txt", "w") as f:
+        f.write(runtime)
+    
+    print("runtime.txt created")
+
+def create_gunicorn_conf():
+    """Create gunicorn configuration for Render"""
+    gunicorn_conf = """# gunicorn_config.py
+import multiprocessing
+
+bind = "0.0.0.0:10000"
+workers = 1  # Render sets WEB_CONCURRENCY
+worker_class = "uvicorn.workers.UvicornWorker"
+timeout = 120
+keepalive = 5
+"""
+    
+    with open("gunicorn_config.py", "w") as f:
+        f.write(gunicorn_conf)
+    
+    print("gunicorn_config.py created")
+
+# ==================== RUN APPLICATION ====================
 if __name__ == "__main__":
-    import uvicorn
+    # Create necessary files for deployment
+    create_requirements_txt()
+    create_runtime_txt()
+    create_gunicorn_conf()
     
-    # Cleanup on startup
-    tts_processor.cleanup_temp_files()
-    tts_processor.cleanup_old_outputs(24)
-    
+    # Get port from environment variable (for Render)
     port = int(os.environ.get("PORT", 8000))
     
     print("=" * 60)
@@ -2473,21 +2672,14 @@ if __name__ == "__main__":
     print("=" * 60)
     print(f"Server starting on port: {port}")
     print(f"Open http://localhost:{port} in your browser")
-    print("Features:")
-    print("  • Single voice TTS with advanced settings")
-    print("  • Multi-voice dialogue support")
-    print("  • Q&A dialogue generation")
-    print("  • Audio cache optimization")
-    print("  • Background task processing")
-    print("  • Progress tracking")
-    print("  • Auto cleanup of old files")
+    print("Optimized for Render deployment")
     print("=" * 60)
     
+    # Run with uvicorn
     uvicorn.run(
-        app,
+        "app:app",
         host="0.0.0.0",
         port=port,
         log_level="info",
-        workers=2,
-        timeout_keep_alive=30
+        reload=False  # Disable reload for production
     )
