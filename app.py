@@ -2647,11 +2647,12 @@ if __name__ == "__main__":
     print("Admin credentials: admin / admin123")
     print("=" * 60)
     
-    # Run with uvicorn
+    # Run with uvicorn with debug
     uvicorn.run(
         "app:app",
         host="0.0.0.0",
         port=port,
-        log_level="info",
-        reload=False
-    )
+        log_level="debug",  # Thay đổi từ "info" thành "debug"
+        reload=True,  # Bật reload để dễ debug
+        access_log=True  # Bật access log
+    ))
