@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Register - TTS Generator</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        
+        .register-container {
+            background: white;
+            border-radius: 20px;
+            padding: 3rem;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            max-width: 500px;
+            width: 100%;
+            margin: 0 auto;
+        }
+        
+        .register-header {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+        
+        .register-header i {
+            font-size: 3rem;
+            color: #4361ee;
+            margin-bottom: 1rem;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #4361ee, #3a0ca3);
+            border: none;
+            padding: 0.75rem;
+            font-weight: 600;
+            width: 100%;
+        }
+        
+        .form-control:focus {
+            border-color: #4361ee;
+            box-shadow: 0 0 0 0.2rem rgba(67, 97, 238, 0.25);
+        }
+        
+        .login-link {
+            text-align: center;
+            margin-top: 1.5rem;
+        }
+        
+        .plan-card {
+            border: 2px solid #e9ecef;
+            border-radius: 10px;
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+            transition: all 0.3s;
+        }
+        
+        .plan-card:hover {
+            border-color: #4361ee;
+            transform: translateY(-2px);
+        }
+        
+        .plan-card.active {
+            border-color: #4361ee;
+            background: rgba(67, 97, 238, 0.05);
+        }
+        
+        .plan-header {
+            text-align: center;
+            margin-bottom: 1rem;
+        }
+        
+        .plan-price {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #4361ee;
+        }
+        
+        .plan-features {
+            list-style: none;
+            padding: 0;
+        }
+        
+        .plan-features li {
+            padding: 0.25rem 0;
+        }
+        
+        .plan-features li i {
+            color: #28a745;
+            margin-right: 0.5rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="register-container">
+            <div class="register-header">
+                <i class="fas fa-microphone-alt"></i>
+                <h2>Create Account</h2>
+                <p class="text-muted">Start with 30,000 free characters per week!</p>
+            </div>
+            
+            <form id="registerForm">
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <label for="full_name" class="form-label">Full Name</label>
+                        <input type="text" class="form-control" id="full_name">
+                    </div>
+                    
+                    <div class="col-md-6 mb-3">
+                        <label for="username" class="form-label">Username *</label>
+                        <input type="text" class="form-control" id="username" required>
+                    </div>
+                </div>
+                
+                <div class="mb-3">
+                    <label for="email" class="form-label">Email *</label>
+                    <input type="email" class="form-control" id="email" required>
+                </div>
+                
+                <div class="mb-3">
+                    <label for="password" class="form-label">Password *</label>
+                    <input type="password" class="form-control" id="password" required>
+                    <small class="text-muted">Minimum 6 characters</small>
+                </div>
+                
+                <div class="mb-3">
+                    <label for="confirm_password" class="form-label">Confirm Password *</label>
+                    <input type="password" class="form-control" id="confirm_password" required>
+                </div>
+                
+                <div class="mb-4">
+                    <h5>Select Your Plan</h5>
+                    <div class="plan-card active" onclick="selectPlan('free')">
+                        <div class="plan-header">
+                            <h6>Free Plan</h6>
+                            <div class="plan-price">$0</div>
+                            <small class="text-muted">Start for free</small>
+                        </div>
+                        <ul class="plan-features">
+                            <li><i class="fas fa-check"></i> 30,000 characters/week</li>
+                            <li><i class="fas fa-check"></i> Single Voice TTS</li>
+                            <li><i class="fas fa-check"></i> Basic Audio Effects</li>
+                            <li><i class="fas fa-times text-danger"></i> Multi-Voice</li>
+                            <li><i class="fas fa-times text-danger"></i> Q&A Dialogue</li>
+                        </ul>
+                    </div>
+                    
+                    <input type="hidden" id="selected_plan" value="free">
+                </div>
+                
+                <div class="form-check mb-3">
+                    <input class="form-check-input" type="checkbox" id="terms" required>
+                    <label class="form-check-label" for="terms">
+                        I agree to the <a href="#" data-bs-toggle="modal" data-bs-target="#termsModal">Terms of Service</a>
+                    </label>
+                </div>
+                
+                <button type="submit" class="btn btn-primary">
+                    <i class="fas fa-user-plus me-2"></i>Create Account
+                </button>
+            </form>
+            
+            <div class="login-link">
+                <p class="mb-0">Already have an account? <a href="/login">Login here</a></p>
+                <p class="mt-2"><a href="/">Back to Home</a></p>
+            </div>
+            
+            <div id="message" class="mt-3"></div>
+        </div>
+    </div>
+    
+    <!-- Terms Modal -->
+    <div class="modal fade" id="termsModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Terms of Service</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <h6>1. Acceptance of Terms</h6>
+                    <p>By accessing and using this TTS Generator service, you accept and agree to be bound by these Terms of Service.</p>
+                    
+                    <h6>2. Free Tier Limitations</h6>
+                    <p>Free tier users are limited to 30,000 characters per week. Unused characters do not roll over to the next week.</p>
+                    
+                    <h6>3. Subscription Plans</h6>
+                    <p>Premium and Pro plans are subscription-based and will automatically renew unless canceled.</p>
+                    
+                    <h6>4. Content Usage</h6>
+                    <p>You retain all rights to the content you generate. We do not claim ownership of your generated audio files.</p>
+                    
+                    <h6>5. Privacy Policy</h6>
+                    <p>We respect your privacy. Your personal information and generated content are protected according to our Privacy Policy.</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        function selectPlan(plan) {
+            document.getElementById('selected_plan').value = plan;
+            
+            // Update visual selection
+            document.querySelectorAll('.plan-card').forEach(card => {
+                card.classList.remove('active');
+            });
+            event.currentTarget.classList.add('active');
+        }
+        
+        document.getElementById('registerForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            const confirmPassword = document.getElementById('confirm_password').value;
+            const email = document.getElementById('email').value;
+            const fullName = document.getElementById('full_name').value;
+            
+            // Validation
+            if (password.length < 6) {
+                document.getElementById('message').innerHTML = `
+                    <div class="alert alert-danger">Password must be at least 6 characters</div>
+                `;
+                return;
+            }
+            
+            if (password !== confirmPassword) {
+                document.getElementById('message').innerHTML = `
+                    <div class="alert alert-danger">Passwords do not match</div>
+                `;
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('username', username);
+            formData.append('password', password);
+            formData.append('email', email);
+            formData.append('full_name', fullName);
+            
+            try {
+                const response = await fetch('/api/register', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    document.getElementById('message').innerHTML = `
+                        <div class="alert alert-success">
+                            ${result.message} Redirecting to login...
+                        </div>
+                    `;
+                    
+                    // Redirect to login after 2 seconds
+                    setTimeout(() => {
+                        window.location.href = '/login';
+                    }, 2000);
+                } else {
+                    document.getElementById('message').innerHTML = `
+                        <div class="alert alert-danger">${result.message || 'Registration failed'}</div>
+                    `;
+                }
+            } catch (error) {
+                document.getElementById('message').innerHTML = `
+                    <div class="alert alert-danger">Network error: ${error.message}</div>
+                `;
+            }
+        });
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
