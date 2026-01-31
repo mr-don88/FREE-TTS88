@@ -186,7 +186,25 @@ class TTSConfig:
         "default_pause": 250,
         "time_colon_pause": 50
     }
+# THÊM HÀM NÀY Ở ĐẦU FILE, TRƯỚC KHI ĐỊNH NGHĨA CLASS
 
+def init_directories():
+    """Initialize all required directories"""
+    required_dirs = [
+        "outputs",
+        "temp", 
+        "audio_cache",
+        "static",
+        "templates",
+        "uploads",  # QUAN TRỌNG: tạo thư mục uploads
+        "uploads/stt",  # và subdirectory
+        "batch_inputs",
+        "stt_outputs"
+    ]
+    
+    for dir_path in required_dirs:
+        os.makedirs(dir_path, exist_ok=True)
+        print(f"✓ Created directory: {dir_path}")
 # ==================== TASK MANAGER ====================
 class TaskManager:
     def __init__(self):
@@ -590,13 +608,9 @@ class TTSProcessor:
         self.cache_manager = AudioCacheManager()
         self.stt_processor = STTProcessor()
         self.load_settings()
-        self.initialize_directories()
+
     
-    def initialize_directories(self):
-        directories = ["outputs", "temp", "audio_cache", "static", "templates", 
-                      "uploads", "batch_inputs", "stt_outputs"]
-        for directory in directories:
-            os.makedirs(directory, exist_ok=True)
+
     
     def load_settings(self):
         if os.path.exists(TTSConfig.SETTINGS_FILE):
@@ -1176,6 +1190,9 @@ class TTSProcessor:
 async def lifespan(app: FastAPI):
     global tts_processor, task_manager
     print("Starting up Professional TTS & STT Generator...")
+    
+    # TẠO THƯ MỤC TRƯỚC TIÊN
+    init_directories()
     
     tts_processor = TTSProcessor()
     task_manager = TaskManager()
