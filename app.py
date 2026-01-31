@@ -915,8 +915,13 @@ class TTSProcessor:
             if i < len(audio_segments) - 1:
                 combined += AudioSegment.silent(duration=pause)
         
-        output_file = os.path.join(output_dir, f"single_voice.{output_format}")
+        file_id = uuid.uuid4().hex
+        output_file = os.path.join(
+            output_dir,
+            f"single_voice_{file_id}.{output_format}"
+        )
         combined.export(output_file, format=output_format, bitrate="192k")
+
         
         return output_file
     
