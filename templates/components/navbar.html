@@ -1,0 +1,113 @@
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+    <div class="container">
+        <a class="navbar-brand fw-bold" href="/">
+            <i class="fas fa-microphone-alt me-2"></i>
+            TTSFree.com
+        </a>
+        
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        
+        <div class="collapse navbar-collapse" id="navbarNav">
+            <ul class="navbar-nav me-auto">
+                <li class="nav-item">
+                    <a class="nav-link {% if request.url.path == '/' %}active{% endif %}" href="/">
+                        <i class="fas fa-home me-1"></i> Home
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link {% if 'text-to-speech' in request.url.path %}active{% endif %}" href="/text-to-speech">
+                        <i class="fas fa-text-height me-1"></i> Text to Speech
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link {% if 'speech-to-text' in request.url.path %}active{% endif %}" href="/speech-to-text">
+                        <i class="fas fa-microphone me-1"></i> Speech to Text
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link {% if 'ai-voices' in request.url.path %}active{% endif %}" href="/ai-voices">
+                        <i class="fas fa-robot me-1"></i> AI Voices
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link {% if 'pricing' in request.url.path %}active{% endif %}" href="/pricing">
+                        <i class="fas fa-tags me-1"></i> Pricing
+                    </a>
+                </li>
+                {% if user and user.is_admin %}
+                <li class="nav-item">
+                    <a class="nav-link text-warning" href="/admin">
+                        <i class="fas fa-cog me-1"></i> Admin
+                    </a>
+                </li>
+                {% endif %}
+            </ul>
+            
+            <ul class="navbar-nav">
+                {% if user %}
+                <li class="nav-item dropdown">
+                    <a class="nav-link dropdown-toggle" href="#" id="userDropdown" role="button" data-bs-toggle="dropdown">
+                        <i class="fas fa-user me-1"></i> {{ user.username }}
+                        <span class="badge bg-success ms-1">{{ user.credits }} credits</span>
+                    </a>
+                    <ul class="dropdown-menu dropdown-menu-end">
+                        <li><a class="dropdown-item" href="/dashboard">
+                            <i class="fas fa-tachometer-alt me-2"></i> Dashboard
+                        </a></li>
+                        <li><a class="dropdown-item" href="/text-to-speech">
+                            <i class="fas fa-text-height me-2"></i> TTS
+                        </a></li>
+                        <li><a class="dropdown-item" href="/speech-to-text">
+                            <i class="fas fa-microphone me-2"></i> STT
+                        </a></li>
+                        <li><hr class="dropdown-divider"></li>
+                        <li><a class="dropdown-item" href="#">
+                            <i class="fas fa-credit-card me-2"></i> Buy Credits
+                        </a></li>
+                        <li><a class="dropdown-item" href="#">
+                            <i class="fas fa-cog me-2"></i> Settings
+                        </a></li>
+                        <li><a class="dropdown-item text-danger" href="/logout">
+                            <i class="fas fa-sign-out-alt me-2"></i> Logout
+                        </a></li>
+                    </ul>
+                </li>
+                {% else %}
+                <li class="nav-item">
+                    <a class="nav-link" href="/login">
+                        <i class="fas fa-sign-in-alt me-1"></i> Login
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="btn btn-primary ms-2" href="/register">
+                        <i class="fas fa-user-plus me-1"></i> Sign Up
+                    </a>
+                </li>
+                {% endif %}
+                
+                <!-- Language Selector -->
+                <li class="nav-item dropdown ms-2">
+                    <a class="nav-link dropdown-toggle" href="#" id="languageDropdown" role="button" data-bs-toggle="dropdown">
+                        <i class="fas fa-globe me-1"></i> {{ (user.language if user else 'en')|upper }}
+                    </a>
+                    <ul class="dropdown-menu dropdown-menu-end">
+                        <li><a class="dropdown-item" href="#" onclick="changeLanguage('en')">
+                            <i class="flag-icon flag-icon-us me-2"></i> English
+                        </a></li>
+                        <li><a class="dropdown-item" href="#" onclick="changeLanguage('vi')">
+                            <i class="flag-icon flag-icon-vn me-2"></i> Tiếng Việt
+                        </a></li>
+                        <li><a class="dropdown-item" href="#" onclick="changeLanguage('zh')">
+                            <i class="flag-icon flag-icon-cn me-2"></i> 中文
+                        </a></li>
+                        <li><a class="dropdown-item" href="#" onclick="changeLanguage('ja')">
+                            <i class="flag-icon flag-icon-jp me-2"></i> 日本語
+                        </a></li>
+                    </ul>
+                </li>
+            </ul>
+        </div>
+    </div>
+</nav>
