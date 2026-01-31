@@ -29,32 +29,34 @@ class TTSConfig:
             {"name": "vi-VN-NamMinhNeural", "gender": "Nam", "display": "Nam Minh"}
         ],
         "English (US)": [
-            {"name": "en-US-GuyNeural", "gender": "Nam"},
-            {"name": "en-US-JennyNeural", "gender": "Nữ"},
-            {"name": "en-US-AvaNeural", "gender": "Nữ"},
-            {"name": "en-US-AndrewNeural", "gender": "Nam"},
-            {"name": "en-US-EmmaNeural", "gender": "Nữ"},
-            {"name": "en-US-BrianNeural", "gender": "Nam"},
-            {"name": "en-US-AnaNeural", "gender": "Nữ"},
-            {"name": "en-US-AndrewMultilingualNeural", "gender": "Nam"},
-            {"name": "en-US-AriaNeural", "gender": "Nữ"},
-            {"name": "en-US-AvaMultilingualNeural", "gender": "Nữ"},
-            {"name": "en-US-BrianMultilingualNeural", "gender": "Nam"},
-            {"name": "en-US-ChristopherNeural", "gender": "Nam"},
-            {"name": "en-US-EmmaMultilingualNeural", "gender": "Nữ"},
-            {"name": "en-US-EricNeural", "gender": "Nam"},
-            {"name": "en-US-MichelleNeural", "gender": "Nữ"},
-            {"name": "en-US-RogerNeural", "gender": "Nam"},
-            {"name": "en-US-SteffanNeural", "gender": "Nam"}
+            {"name": "en-US-GuyNeural", "gender": "Nam", "display": "Guy (US)"},
+            {"name": "en-US-JennyNeural", "gender": "Nữ", "display": "Jenny (US)"},
+            {"name": "en-US-AvaNeural", "gender": "Nữ", "display": "Ava (US)"},
+            {"name": "en-US-AndrewNeural", "gender": "Nam", "display": "Andrew (US)"},
+            {"name": "en-US-EmmaNeural", "gender": "Nữ", "display": "Emma (US)"},
+            {"name": "en-US-BrianNeural", "gender": "Nam", "display": "Brian (US)"},
+            {"name": "en-US-AnaNeural", "gender": "Nữ", "display": "Ana (US)"},
+            {"name": "en-US-AndrewMultilingualNeural", "gender": "Nam", "display": "Andrew (US • Multi)"},
+            {"name": "en-US-AriaNeural", "gender": "Nữ", "display": "Aria (US)"},
+            {"name": "en-US-AvaMultilingualNeural", "gender": "Nữ", "display": "Ava (US • Multi)"},
+            {"name": "en-US-BrianMultilingualNeural", "gender": "Nam", "display": "Brian (US • Multi)"},
+            {"name": "en-US-ChristopherNeural", "gender": "Nam", "display": "Christopher (US)"},
+            {"name": "en-US-EmmaMultilingualNeural", "gender": "Nữ", "display": "Emma (US • Multi)"},
+            {"name": "en-US-EricNeural", "gender": "Nam", "display": "Eric (US)"},
+            {"name": "en-US-MichelleNeural", "gender": "Nữ", "display": "Michelle (US)"},
+            {"name": "en-US-RogerNeural", "gender": "Nam", "display": "Roger (US)"},
+            {"name": "en-US-SteffanNeural", "gender": "Nam", "display": "Steffan (US)"}
         ],
+        
         "English (UK)": [
-            {"name": "en-GB-LibbyNeural", "gender": "Nữ"},
-            {"name": "en-GB-MiaNeural", "gender": "Nữ"},
-            {"name": "en-GB-RyanNeural", "gender": "Nam"},
-            {"name": "en-GB-MaisieNeural", "gender": "Nữ"},
-            {"name": "en-GB-SoniaNeural", "gender": "Nữ"},
-            {"name": "en-GB-ThomasNeural", "gender": "Nam"}
+            {"name": "en-GB-LibbyNeural", "gender": "Nữ", "display": "Libby (UK)"},
+            {"name": "en-GB-MiaNeural", "gender": "Nữ", "display": "Mia (UK)"},
+            {"name": "en-GB-RyanNeural", "gender": "Nam", "display": "Ryan (UK)"},
+            {"name": "en-GB-MaisieNeural", "gender": "Nữ", "display": "Maisie (UK)"},
+            {"name": "en-GB-SoniaNeural", "gender": "Nữ", "display": "Sonia (UK)"},
+            {"name": "en-GB-ThomasNeural", "gender": "Nam", "display": "Thomas (UK)"}
         ],
+
         "中文 (普通话)": [
             {"name": "zh-CN-XiaoxiaoNeural", "gender": "Nữ", "display": "晓晓"},
             {"name": "zh-CN-YunxiNeural", "gender": "Nam", "display": "云希"},
