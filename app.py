@@ -5,10 +5,11 @@ import os
 import random
 import re
 import time
+import uuid
 import zipfile
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
-from fastapi import FastAPI, Request, Form, UploadFile, File, HTTPException
+from fastapi import FastAPI, Request, Form, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -18,6 +19,10 @@ from pydub.effects import normalize, compress_dynamic_range, low_pass_filter, hi
 import webvtt
 import natsort
 import uvicorn
+import glob
+import shutil
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 # ==================== SYSTEM CONFIGURATION ====================
 class TTSConfig:
@@ -171,6 +176,53 @@ class TTSConfig:
         "default_pause": 250,
         "time_colon_pause": 50
     }
+
+# ==================== TASK MANAGER ====================
+class TaskManager:
+    def __init__(self):
+        self.tasks = {}
+        self.executor = ThreadPoolExecutor(max_workers=4)
+    
+    def create_task(self, task_id: str, task_type: str):
+        self.tasks[task_id] = {
+            "id": task_id,
+            "type": task_type,
+            "status": "pending",
+            "progress": 0,
+            "message": "Task created",
+            "result": None,
+            "created_at": datetime.now(),
+            "updated_at": datetime.now()
+        }
+        return task_id
+    
+    def update_task(self, task_id: str, status: str = None, progress: int = None, 
+                   message: str = None, result: dict = None):
+        if task_id in self.tasks:
+            if status:
+                self.tasks[task_id]["status"] = status
+            if progress is not None:
+                self.tasks[task_id]["progress"] = progress
+            if message:
+                self.tasks[task_id]["message"] = message
+            if result:
+                self.tasks[task_id]["result"] = result
+            self.tasks[task_id]["updated_at"] = datetime.now()
+    
+    def get_task(self, task_id: str):
+        return self.tasks.get(task_id)
+    
+    def cleanup_old_tasks(self, hours_old: int = 1):
+        """Cleanup tasks older than specified hours"""
+        cutoff_time = datetime.now() - timedelta(hours=hours_old)
+        to_delete = []
+        
+        for task_id, task_data in self.tasks.items():
+            if task_data["created_at"] < cutoff_time:
+                to_delete.append(task_id)
+        
+        for task_id in to_delete:
+            del self.tasks[task_id]
 
 # ==================== TEXT PROCESSOR ====================
 class TextProcessor:
@@ -642,12 +694,73 @@ class TextProcessor:
             
         return dialogues
 
+# ==================== AUDIO CACHE MANAGER ====================
+class AudioCacheManager:
+    def __init__(self):
+        self.cache_dir = "audio_cache"
+        self.max_cache_size = 100  # Số file tối đa trong cache
+        os.makedirs(self.cache_dir, exist_ok=True)
+    
+    def get_cache_key(self, text: str, voice_id: str, rate: int, pitch: int, volume: int) -> str:
+        """Tạo cache key từ các tham số"""
+        import hashlib
+        key_string = f"{text}_{voice_id}_{rate}_{pitch}_{volume}"
+        return hashlib.md5(key_string.encode()).hexdigest()
+    
+    def get_cached_audio(self, cache_key: str) -> Optional[str]:
+        """Lấy file audio từ cache nếu tồn tại"""
+        cache_file = os.path.join(self.cache_dir, f"{cache_key}.mp3")
+        if os.path.exists(cache_file):
+            # Kiểm tra thời gian cache (không quá 1 ngày)
+            file_age = time.time() - os.path.getmtime(cache_file)
+            if file_age < 86400:  # 24 giờ
+                return cache_file
+        return None
+    
+    def save_to_cache(self, cache_key: str, audio_file: str):
+        """Lưu audio vào cache"""
+        try:
+            # Giới hạn số file trong cache
+            cache_files = os.listdir(self.cache_dir)
+            if len(cache_files) >= self.max_cache_size:
+                # Xóa file cũ nhất
+                oldest_file = min(
+                    [os.path.join(self.cache_dir, f) for f in cache_files],
+                    key=os.path.getmtime
+                )
+                os.remove(oldest_file)
+            
+            cache_file = os.path.join(self.cache_dir, f"{cache_key}.mp3")
+            shutil.copy(audio_file, cache_file)
+            return cache_file
+        except Exception as e:
+            print(f"Error saving to cache: {e}")
+            return None
+    
+    def clear_cache(self):
+        """Xóa toàn bộ cache"""
+        try:
+            shutil.rmtree(self.cache_dir)
+            os.makedirs(self.cache_dir, exist_ok=True)
+            return True
+        except Exception as e:
+            print(f"Error clearing cache: {e}")
+            return False
+
 # ==================== TTS PROCESSOR ====================
 class TTSProcessor:
     def __init__(self):
         self.text_processor = TextProcessor()
+        self.cache_manager = AudioCacheManager()
         self.load_settings()
-        
+        self.initialize_directories()
+    
+    def initialize_directories(self):
+        """Khởi tạo các thư mục cần thiết"""
+        directories = ["outputs", "temp", "audio_cache", "static", "templates"]
+        for directory in directories:
+            os.makedirs(directory, exist_ok=True)
+    
     def load_settings(self):
         if os.path.exists(TTSConfig.SETTINGS_FILE):
             with open(TTSConfig.SETTINGS_FILE, 'r', encoding='utf-8') as f:
@@ -706,19 +819,41 @@ class TTSProcessor:
         with open(TTSConfig.SETTINGS_FILE, 'w', encoding='utf-8') as f:
             json.dump(self.settings, f, indent=2, ensure_ascii=False)
     
-    async def generate_speech(self, text: str, voice_id: str, rate: int = 0, pitch: int = 0, volume: int = 100):
-        """Generate speech using edge-tts"""
+    async def generate_speech(self, text: str, voice_id: str, rate: int = 0, pitch: int = 0, volume: int = 100, task_id: str = None):
+        """Generate speech using edge-tts with cache optimization"""
         try:
-            await asyncio.sleep(random.uniform(0.1, 0.3))
+            # Kiểm tra cache trước
+            cache_key = self.cache_manager.get_cache_key(text, voice_id, rate, pitch, volume)
+            cached_file = self.cache_manager.get_cached_audio(cache_key)
             
+            if cached_file:
+                # Tạo file tạm từ cache
+                temp_file = f"temp/cache_{uuid.uuid4().hex[:8]}.mp3"
+                shutil.copy(cached_file, temp_file)
+                
+                # Đọc audio để lấy subtitles (không có subtitle từ cache)
+                audio = AudioSegment.from_file(temp_file)
+                return temp_file, []
+            
+            # Tạo unique ID để tránh cache
+            unique_id = uuid.uuid4().hex[:8]
+            
+            # Format parameters
             rate_str = f"{rate}%" if rate != 0 else "+0%"
-            pitch_str = f"+{pitch}Hz" if pitch >=0 else f"{pitch}Hz"
+            pitch_str = f"+{pitch}Hz" if pitch >= 0 else f"{pitch}Hz"
             
-            communicate = edge_tts.Communicate(text, voice_id, rate=rate_str, pitch=pitch_str)
+            # Tạo communicate object với proxy để tránh cache
+            communicate = edge_tts.Communicate(
+                text, 
+                voice_id, 
+                rate=rate_str, 
+                pitch=pitch_str
+            )
             
             audio_chunks = []
             subtitles = []
             
+            # Stream audio data
             async for chunk in communicate.stream():
                 if chunk["type"] == "audio":
                     audio_chunks.append(chunk["data"])
@@ -732,27 +867,31 @@ class TTSProcessor:
             if not audio_chunks:
                 return None, []
             
-            # Combine audio chunks
+            # Lưu audio vào file tạm
             audio_data = b"".join(audio_chunks)
+            temp_file = f"temp/audio_{unique_id}_{int(time.time())}.mp3"
             
-            # Process audio
-            temp_file = f"temp_{int(time.time())}_{random.randint(1000, 9999)}.mp3"
             with open(temp_file, "wb") as f:
                 f.write(audio_data)
             
+            # Xử lý audio
             audio = AudioSegment.from_file(temp_file)
             
-            # Apply volume adjustment
+            # Điều chỉnh volume
             volume_adjustment = min(max(volume - 100, -50), 10)
             audio = audio + volume_adjustment
             
-            # Apply audio processing
+            # Áp dụng các hiệu ứng audio
             audio = normalize(audio)
             audio = compress_dynamic_range(audio, threshold=-20.0, ratio=4.0)
             audio = low_pass_filter(audio, 14000)
             audio = high_pass_filter(audio, 100)
             
-            audio.export(temp_file, format="mp3", bitrate="256k")
+            # Xuất với chất lượng cao
+            audio.export(temp_file, format="mp3", bitrate="320k", parameters=["-ar", "44100"])
+            
+            # Lưu vào cache
+            self.cache_manager.save_to_cache(cache_key, temp_file)
             
             return temp_file, subtitles
             
@@ -782,52 +921,110 @@ class TTSProcessor:
             return None
     
     async def process_single_voice(self, text: str, voice_id: str, rate: int, pitch: int, 
-                                 volume: int, pause: int, output_format: str = "mp3"):
-        """Process text with single voice"""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                                 volume: int, pause: int, output_format: str = "mp3", task_id: str = None):
+        """Process text with single voice - Optimized version"""
+        # Xóa cache và file cũ trước khi bắt đầu
+        self.cleanup_temp_files()
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         output_dir = f"outputs/single_{timestamp}"
         os.makedirs(output_dir, exist_ok=True)
         
+        # Xử lý text
         sentences = self.text_processor.split_sentences(text)
+        
+        # Giới hạn số lượng câu để xử lý nhanh hơn
+        MAX_SENTENCES = 100
+        if len(sentences) > MAX_SENTENCES:
+            sentences = sentences[:MAX_SENTENCES]
+            print(f"Processing {MAX_SENTENCES} sentences only for performance")
+        
+        # Tạo semaphore để giới hạn concurrent requests
+        SEMAPHORE = asyncio.Semaphore(3)
+        
+        async def bounded_generate(sentence, index):
+            async with SEMAPHORE:
+                # Cập nhật progress nếu có task_id
+                if task_id and task_manager:
+                    progress = int((index / len(sentences)) * 90)
+                    task_manager.update_task(task_id, progress=progress, 
+                                           message=f"Processing sentence {index+1}/{len(sentences)}")
+                
+                return await self.generate_speech(sentence, voice_id, rate, pitch, volume)
+        
+        # Xử lý các câu theo batch
         audio_segments = []
         all_subtitles = []
         
-        for i, sentence in enumerate(sentences):
-            temp_file, subs = await self.generate_speech(sentence, voice_id, rate, pitch, volume)
-            if temp_file:
-                audio = AudioSegment.from_file(temp_file)
-                audio_segments.append(audio)
-                all_subtitles.extend(subs)
-                os.remove(temp_file)
+        for i in range(0, len(sentences), 3):  # Batch size = 3
+            batch = sentences[i:i+3]
+            batch_tasks = [bounded_generate(s, i+j) for j, s in enumerate(batch)]
+            batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+            
+            for result in batch_results:
+                if isinstance(result, tuple) and len(result) == 2:
+                    temp_file, subs = result
+                    if temp_file and os.path.exists(temp_file):
+                        try:
+                            audio = AudioSegment.from_file(temp_file)
+                            audio_segments.append(audio)
+                            
+                            # Điều chỉnh thời gian cho subtitles
+                            current_time = sum(len(a) for a in audio_segments[:-1])
+                            for sub in subs:
+                                if isinstance(sub, dict):
+                                    sub["start"] += current_time
+                                    sub["end"] += current_time
+                                    all_subtitles.append(sub)
+                            
+                            # Xóa file tạm ngay
+                            try:
+                                os.remove(temp_file)
+                            except:
+                                pass
+                        except Exception as e:
+                            print(f"Error processing audio segment: {e}")
         
         if not audio_segments:
             return None, None
         
-        # Combine audio with pauses
+        # Kết hợp các audio segment với pause
         combined = AudioSegment.empty()
+        current_time = 0
+        
         for i, audio in enumerate(audio_segments):
             audio = audio.fade_in(50).fade_out(50)
             combined += audio
+            current_time += len(audio)
+            
             if i < len(audio_segments) - 1:
                 combined += AudioSegment.silent(duration=pause)
+                current_time += pause
         
-        # Export combined audio
+        # Xuất file audio
         output_file = os.path.join(output_dir, f"single_voice.{output_format}")
         combined.export(output_file, format=output_format, bitrate="256k")
         
-        # Generate SRT
+        # Tạo file subtitle
         srt_file = self.generate_srt(all_subtitles, output_file)
+        
+        # Cập nhật progress hoàn thành
+        if task_id and task_manager:
+            task_manager.update_task(task_id, progress=100, 
+                                   message="Audio generation completed")
         
         return output_file, srt_file
     
     async def process_multi_voice(self, text: str, voices_config: dict, pause: int, 
-                                repeat: int, output_format: str = "mp3"):
+                                repeat: int, output_format: str = "mp3", task_id: str = None):
         """Process text with multiple voices"""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.cleanup_temp_files()
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         output_dir = f"outputs/multi_{timestamp}"
         os.makedirs(output_dir, exist_ok=True)
         
-        # Parse character dialogues
+        # Phân tích dialogue
         dialogues = []
         current_char = None
         current_text = []
@@ -852,17 +1049,22 @@ class TTSProcessor:
         if not dialogues:
             return None, None
         
-        # Generate audio for each dialogue
+        # Tạo audio cho mỗi dialogue
         audio_segments = []
         all_subtitles = []
         
-        for char, dialogue_text in dialogues:
+        for i, (char, dialogue_text) in enumerate(dialogues):
+            if task_id and task_manager:
+                progress = int((i / len(dialogues)) * 90)
+                task_manager.update_task(task_id, progress=progress,
+                                       message=f"Processing {char}: {i+1}/{len(dialogues)}")
+            
             if char == "CHAR1":
                 config = voices_config["char1"]
             elif char == "CHAR2":
                 config = voices_config["char2"]
             else:  # NARRATOR or others
-                config = voices_config["char1"]  # Default to char1
+                config = voices_config["char1"]
             
             temp_file, subs = await self.generate_speech(
                 dialogue_text, 
@@ -885,21 +1087,27 @@ class TTSProcessor:
         if not audio_segments:
             return None, None
         
-        # Combine with repetition
+        # Kết hợp với repetition
         combined = AudioSegment.empty()
-        for _ in range(repeat):
+        
+        for rep in range(repeat):
+            if task_id and task_manager:
+                task_manager.update_task(task_id, message=f"Combining repetition {rep+1}/{repeat}")
+            
             for i, (char, audio) in enumerate(audio_segments):
                 audio = audio.fade_in(50).fade_out(50)
                 combined += audio
                 if i < len(audio_segments) - 1:
                     combined += AudioSegment.silent(duration=pause)
-            combined += AudioSegment.silent(duration=pause * 2)  # Longer pause between repetitions
+            
+            if rep < repeat - 1:
+                combined += AudioSegment.silent(duration=pause * 2)
         
-        # Export
+        # Xuất file
         output_file = os.path.join(output_dir, f"multi_voice.{output_format}")
         combined.export(output_file, format=output_format, bitrate="256k")
         
-        # Generate SRT with speaker labels
+        # Tạo SRT với speaker labels
         if all_subtitles:
             srt_content = []
             for i, sub in enumerate(all_subtitles, start=1):
@@ -918,16 +1126,21 @@ class TTSProcessor:
         else:
             srt_file = None
         
+        if task_id and task_manager:
+            task_manager.update_task(task_id, progress=100, message="Multi-voice audio generated")
+        
         return output_file, srt_file
     
     async def process_qa_dialogue(self, text: str, qa_config: dict, pause_q: int, 
-                                pause_a: int, repeat: int, output_format: str = "mp3"):
+                                pause_a: int, repeat: int, output_format: str = "mp3", task_id: str = None):
         """Process Q&A dialogue"""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.cleanup_temp_files()
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         output_dir = f"outputs/qa_{timestamp}"
         os.makedirs(output_dir, exist_ok=True)
         
-        # Parse Q&A
+        # Phân tích Q&A
         dialogues = []
         current_speaker = None
         current_text = []
@@ -952,11 +1165,16 @@ class TTSProcessor:
         if not dialogues:
             return None, None
         
-        # Generate audio
+        # Tạo audio
         audio_segments = []
         all_subtitles = []
         
-        for speaker, dialogue_text in dialogues:
+        for i, (speaker, dialogue_text) in enumerate(dialogues):
+            if task_id and task_manager:
+                progress = int((i / len(dialogues)) * 90)
+                task_manager.update_task(task_id, progress=progress,
+                                       message=f"Processing {speaker}: {i+1}/{len(dialogues)}")
+            
             if speaker == "Q":
                 config = qa_config["question"]
                 pause = pause_q
@@ -985,21 +1203,27 @@ class TTSProcessor:
         if not audio_segments:
             return None, None
         
-        # Combine with repetition
+        # Kết hợp với repetition
         combined = AudioSegment.empty()
-        for _ in range(repeat):
+        
+        for rep in range(repeat):
+            if task_id and task_manager:
+                task_manager.update_task(task_id, message=f"Combining repetition {rep+1}/{repeat}")
+            
             for i, (speaker, audio, pause) in enumerate(audio_segments):
                 audio = audio.fade_in(50).fade_out(50)
                 combined += audio
                 if i < len(audio_segments) - 1:
                     combined += AudioSegment.silent(duration=pause)
-            combined += AudioSegment.silent(duration=pause_a * 2)  # Longer pause between repetitions
+            
+            if rep < repeat - 1:
+                combined += AudioSegment.silent(duration=pause_a * 2)
         
-        # Export
+        # Xuất file
         output_file = os.path.join(output_dir, f"qa_dialogue.{output_format}")
         combined.export(output_file, format=output_format, bitrate="256k")
         
-        # Generate SRT
+        # Tạo SRT
         if all_subtitles:
             srt_content = []
             for i, sub in enumerate(all_subtitles, start=1):
@@ -1018,25 +1242,55 @@ class TTSProcessor:
         else:
             srt_file = None
         
+        if task_id and task_manager:
+            task_manager.update_task(task_id, progress=100, message="Q&A audio generated")
+        
         return output_file, srt_file
+    
+    def cleanup_temp_files(self):
+        """Dọn dẹp file tạm"""
+        try:
+            temp_files = glob.glob("temp/*.mp3")
+            for file in temp_files:
+                try:
+                    if os.path.exists(file):
+                        file_age = time.time() - os.path.getmtime(file)
+                        if file_age > 3600:  # Xóa file cũ hơn 1 giờ
+                            os.remove(file)
+                except:
+                    pass
+        except Exception as e:
+            print(f"Error cleaning temp files: {e}")
+    
+    def cleanup_old_outputs(self, hours_old: int = 24):
+        """Dọn dẹp outputs cũ"""
+        try:
+            if os.path.exists("outputs"):
+                now = time.time()
+                for folder_name in os.listdir("outputs"):
+                    folder_path = os.path.join("outputs", folder_name)
+                    if os.path.isdir(folder_path):
+                        folder_age = now - os.path.getmtime(folder_path)
+                        if folder_age > hours_old * 3600:
+                            shutil.rmtree(folder_path)
+        except Exception as e:
+            print(f"Error cleaning old outputs: {e}")
 
 # ==================== FASTAPI APPLICATION ====================
-app = FastAPI(title="Professional TTS Generator", version="1.0.0")
+app = FastAPI(title="Professional TTS Generator", version="2.0.0")
+
+# Initialize components
+tts_processor = TTSProcessor()
+task_manager = TaskManager()
 
 # Create necessary directories
-os.makedirs("static", exist_ok=True)
-os.makedirs("templates", exist_ok=True)
-os.makedirs("outputs", exist_ok=True)
-os.makedirs("temp", exist_ok=True)
+tts_processor.initialize_directories()
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Templates
 templates = Jinja2Templates(directory="templates")
-
-# TTS Processor instance
-tts_processor = TTSProcessor()
 
 # ==================== ROUTES ====================
 @app.get("/", response_class=HTMLResponse)
@@ -1076,16 +1330,19 @@ async def generate_single_voice(
     pause: int = Form(500),
     output_format: str = Form("mp3")
 ):
-    """Generate single voice TTS"""
+    """Generate single voice TTS with task system"""
     try:
-        audio_file, srt_file = await tts_processor.process_single_voice(
-            text, voice_id, rate, pitch, volume, pause, output_format
-        )
+        if not text.strip():
+            raise HTTPException(status_code=400, detail="Text is required")
         
-        if not audio_file:
-            raise HTTPException(status_code=500, detail="Failed to generate audio")
+        if not voice_id:
+            raise HTTPException(status_code=400, detail="Voice is required")
         
-        # Save settings
+        # Tạo task ID
+        task_id = f"single_{int(time.time())}_{random.randint(1000, 9999)}"
+        task_manager.create_task(task_id, "single_voice")
+        
+        # Lưu settings
         tts_processor.settings["single_voice"] = {
             "voice": voice_id,
             "rate": rate,
@@ -1095,12 +1352,41 @@ async def generate_single_voice(
         }
         tts_processor.save_settings()
         
+        # Chạy trong background
+        async def background_task():
+            try:
+                audio_file, srt_file = await tts_processor.process_single_voice(
+                    text, voice_id, rate, pitch, volume, pause, output_format, task_id
+                )
+                
+                if audio_file:
+                    result = {
+                        "success": True,
+                        "audio_url": f"/download/{os.path.basename(audio_file)}",
+                        "srt_url": f"/download/{os.path.basename(srt_file)}" if srt_file else None,
+                        "message": "Audio generated successfully"
+                    }
+                else:
+                    result = {
+                        "success": False,
+                        "message": "Failed to generate audio"
+                    }
+                
+                task_manager.update_task(task_id, status="completed", result=result)
+                
+            except Exception as e:
+                task_manager.update_task(task_id, status="failed", 
+                                       message=f"Error: {str(e)}")
+        
+        # Start background task
+        asyncio.create_task(background_task())
+        
         return {
             "success": True,
-            "audio_url": f"/download/{os.path.basename(audio_file)}",
-            "srt_url": f"/download/{os.path.basename(srt_file)}" if srt_file else None,
-            "message": "Audio generated successfully"
+            "task_id": task_id,
+            "message": "Audio generation started. Check task status."
         }
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1123,6 +1409,13 @@ async def generate_multi_voice(
 ):
     """Generate multi-voice TTS"""
     try:
+        if not text.strip():
+            raise HTTPException(status_code=400, detail="Text is required")
+        
+        # Tạo task ID
+        task_id = f"multi_{int(time.time())}_{random.randint(1000, 9999)}"
+        task_manager.create_task(task_id, "multi_voice")
+        
         voices_config = {
             "char1": {
                 "language": char1_language,
@@ -1140,14 +1433,7 @@ async def generate_multi_voice(
             }
         }
         
-        audio_file, srt_file = await tts_processor.process_multi_voice(
-            text, voices_config, pause, repeat, output_format
-        )
-        
-        if not audio_file:
-            raise HTTPException(status_code=500, detail="Failed to generate audio")
-        
-        # Save settings
+        # Lưu settings
         tts_processor.settings["multi_voice"] = {
             "char1": voices_config["char1"],
             "char2": voices_config["char2"],
@@ -1156,12 +1442,40 @@ async def generate_multi_voice(
         }
         tts_processor.save_settings()
         
+        # Background task
+        async def background_task():
+            try:
+                audio_file, srt_file = await tts_processor.process_multi_voice(
+                    text, voices_config, pause, repeat, output_format, task_id
+                )
+                
+                if audio_file:
+                    result = {
+                        "success": True,
+                        "audio_url": f"/download/{os.path.basename(audio_file)}",
+                        "srt_url": f"/download/{os.path.basename(srt_file)}" if srt_file else None,
+                        "message": "Multi-voice audio generated successfully"
+                    }
+                else:
+                    result = {
+                        "success": False,
+                        "message": "Failed to generate audio"
+                    }
+                
+                task_manager.update_task(task_id, status="completed", result=result)
+                
+            except Exception as e:
+                task_manager.update_task(task_id, status="failed", 
+                                       message=f"Error: {str(e)}")
+        
+        asyncio.create_task(background_task())
+        
         return {
             "success": True,
-            "audio_url": f"/download/{os.path.basename(audio_file)}",
-            "srt_url": f"/download/{os.path.basename(srt_file)}" if srt_file else None,
-            "message": "Multi-voice audio generated successfully"
+            "task_id": task_id,
+            "message": "Multi-voice audio generation started"
         }
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1185,6 +1499,13 @@ async def generate_qa_dialogue(
 ):
     """Generate Q&A dialogue TTS"""
     try:
+        if not text.strip():
+            raise HTTPException(status_code=400, detail="Text is required")
+        
+        # Tạo task ID
+        task_id = f"qa_{int(time.time())}_{random.randint(1000, 9999)}"
+        task_manager.create_task(task_id, "qa_dialogue")
+        
         qa_config = {
             "question": {
                 "language": question_language,
@@ -1202,14 +1523,7 @@ async def generate_qa_dialogue(
             }
         }
         
-        audio_file, srt_file = await tts_processor.process_qa_dialogue(
-            text, qa_config, pause_q, pause_a, repeat, output_format
-        )
-        
-        if not audio_file:
-            raise HTTPException(status_code=500, detail="Failed to generate audio")
-        
-        # Save settings
+        # Lưu settings
         tts_processor.settings["qa_voice"] = {
             "question": qa_config["question"],
             "answer": qa_config["answer"],
@@ -1219,21 +1533,66 @@ async def generate_qa_dialogue(
         }
         tts_processor.save_settings()
         
+        # Background task
+        async def background_task():
+            try:
+                audio_file, srt_file = await tts_processor.process_qa_dialogue(
+                    text, qa_config, pause_q, pause_a, repeat, output_format, task_id
+                )
+                
+                if audio_file:
+                    result = {
+                        "success": True,
+                        "audio_url": f"/download/{os.path.basename(audio_file)}",
+                        "srt_url": f"/download/{os.path.basename(srt_file)}" if srt_file else None,
+                        "message": "Q&A dialogue audio generated successfully"
+                    }
+                else:
+                    result = {
+                        "success": False,
+                        "message": "Failed to generate audio"
+                    }
+                
+                task_manager.update_task(task_id, status="completed", result=result)
+                
+            except Exception as e:
+                task_manager.update_task(task_id, status="failed", 
+                                       message=f"Error: {str(e)}")
+        
+        asyncio.create_task(background_task())
+        
         return {
             "success": True,
-            "audio_url": f"/download/{os.path.basename(audio_file)}",
-            "srt_url": f"/download/{os.path.basename(srt_file)}" if srt_file else None,
-            "message": "Q&A dialogue audio generated successfully"
+            "task_id": task_id,
+            "message": "Q&A audio generation started"
         }
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/task/{task_id}")
+async def get_task_status(task_id: str):
+    """Get task status"""
+    task = task_manager.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    return {
+        "task_id": task_id,
+        "status": task["status"],
+        "progress": task["progress"],
+        "message": task["message"],
+        "result": task.get("result"),
+        "created_at": task["created_at"].isoformat(),
+        "updated_at": task["updated_at"].isoformat()
+    }
 
 @app.get("/download/{filename}")
 async def download_file(filename: str):
     """Download generated files"""
     file_path = None
     
-    # Search in outputs directory
+    # Tìm file trong outputs directory
     for root, dirs, files in os.walk("outputs"):
         if filename in files:
             file_path = os.path.join(root, filename)
@@ -1254,36 +1613,80 @@ async def get_settings():
     return tts_processor.settings
 
 @app.post("/api/cleanup")
-async def cleanup_old_files():
-    """Cleanup old generated files (older than 1 hour)"""
+async def cleanup_files():
+    """Cleanup temporary and old files"""
     try:
-        now = time.time()
-        deleted = 0
+        # Cleanup tasks
+        task_manager.cleanup_old_tasks(1)
         
-        for root, dirs, files in os.walk("outputs"):
-            for file in files:
-                file_path = os.path.join(root, file)
-                if os.path.getmtime(file_path) < now - 3600:  # 1 hour
-                    os.remove(file_path)
-                    deleted += 1
+        # Cleanup files
+        tts_processor.cleanup_temp_files()
+        tts_processor.cleanup_old_outputs(1)  # 1 hour
         
-        # Clean temp directory
-        for file in os.listdir("temp"):
-            file_path = os.path.join("temp", file)
-            if os.path.isfile(file_path):
-                os.remove(file_path)
+        # Clear audio cache
+        tts_processor.cache_manager.clear_cache()
         
-        return {"success": True, "deleted": deleted}
+        return {"success": True, "message": "Cleanup completed"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ==================== HTML TEMPLATES ====================
-# Create templates directory and HTML files
-os.makedirs("templates", exist_ok=True)
+@app.post("/api/cleanup/all")
+async def cleanup_all():
+    """Cleanup all temporary files and cache completely"""
+    try:
+        # Xóa toàn bộ temp
+        if os.path.exists("temp"):
+            shutil.rmtree("temp")
+            os.makedirs("temp")
+        
+        # Xóa toàn bộ outputs (giữ lại cấu trúc)
+        if os.path.exists("outputs"):
+            shutil.rmtree("outputs")
+            os.makedirs("outputs")
+        
+        # Xóa toàn bộ cache
+        tts_processor.cache_manager.clear_cache()
+        
+        # Xóa task cache
+        task_manager.tasks.clear()
+        
+        # Xóa edge-tts cache
+        cache_dir = os.path.expanduser("~/.cache/edge-tts")
+        if os.path.exists(cache_dir):
+            try:
+                shutil.rmtree(cache_dir)
+            except:
+                pass
+        
+        return {
+            "success": True, 
+            "message": "All cache and temporary files cleared"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-# index.html template
-GA_ID = "G-EYXEYJHETE"
-index_html = """
+# ==================== STARTUP AND SHUTDOWN ====================
+@app.on_event("startup")
+async def startup_event():
+    """Startup tasks"""
+    # Cleanup old files on startup
+    tts_processor.cleanup_temp_files()
+    tts_processor.cleanup_old_outputs(24)  # 24 hours
+    task_manager.cleanup_old_tasks(1)
+    
+    # Create template file if not exists
+    create_template_file()
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Shutdown tasks"""
+    # Cleanup temp files on shutdown
+    tts_processor.cleanup_temp_files()
+
+# ==================== HTML TEMPLATE CREATION ====================
+def create_template_file():
+    """Create HTML template file"""
+    template_content = """
 <!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -1299,18 +1702,12 @@ index_html = """
             --success-color: #4cc9f0;
             --light-bg: #f8f9fa;
             --dark-bg: #212529;
-            --border-color: #dee2e6;
         }
         
         body {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-        }
-        
-        .navbar-brand {
-            font-weight: 700;
-            font-size: 1.5rem;
         }
         
         .main-container {
@@ -1323,7 +1720,7 @@ index_html = """
         }
         
         .nav-tabs {
-            border-bottom: 2px solid var(--border-color);
+            border-bottom: 2px solid #dee2e6;
             background: var(--light-bg);
         }
         
@@ -1346,11 +1743,6 @@ index_html = """
             padding: 2rem;
         }
         
-        .form-label {
-            font-weight: 600;
-            color: var(--dark-bg);
-        }
-        
         .btn-primary {
             background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
             border: none;
@@ -1362,13 +1754,6 @@ index_html = """
         .btn-primary:hover {
             transform: translateY(-2px);
             box-shadow: 0 10px 20px rgba(67, 97, 238, 0.3);
-        }
-        
-        .audio-player {
-            background: var(--light-bg);
-            border-radius: 10px;
-            padding: 1rem;
-            margin-top: 1rem;
         }
         
         .loading-overlay {
@@ -1405,56 +1790,16 @@ index_html = """
             z-index: 1000;
         }
         
-        .voice-card {
-            border: 1px solid var(--border-color);
+        .progress-container {
+            margin: 1rem 0;
+        }
+        
+        .task-status {
+            background: #f8f9fa;
             border-radius: 10px;
             padding: 1rem;
-            margin-bottom: 1rem;
-            transition: all 0.3s;
-        }
-        
-        .voice-card:hover {
-            border-color: var(--primary-color);
-            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
-        }
-        
-        .preview-btn {
-            margin-top: 0.5rem;
-        }
-        
-        .output-card {
-            background: linear-gradient(135deg, #f8f9fa, #e9ecef);
-            border-radius: 10px;
-            padding: 1.5rem;
-            margin-top: 2rem;
-        }
-        
-        .accordion-button:not(.collapsed) {
-            background-color: rgba(67, 97, 238, 0.1);
-            color: var(--primary-color);
-        }
-        
-        .character-tag {
-            display: inline-block;
-            padding: 0.25rem 0.75rem;
-            border-radius: 20px;
-            font-size: 0.875rem;
-            font-weight: 600;
-            margin-right: 0.5rem;
-            margin-bottom: 0.5rem;
-        }
-        
-        .char1-tag { background: #e3f2fd; color: #1976d2; }
-        .char2-tag { background: #f3e5f5; color: #7b1fa2; }
-        .q-tag { background: #e8f5e9; color: #388e3c; }
-        .a-tag { background: #fff3e0; color: #f57c00; }
-        
-        .language-selector {
-            margin-bottom: 0.75rem;
-        }
-        
-        .voice-selector {
-            margin-bottom: 0.75rem;
+            margin: 1rem 0;
+            display: none;
         }
     </style>
 </head>
@@ -1464,11 +1809,11 @@ index_html = """
         <div class="container">
             <a class="navbar-brand" href="/">
                 <i class="fas fa-microphone-alt me-2"></i>
-                Professional TTS Generator
+                Professional TTS Generator v2.0
             </a>
-            <div class="navbar-text">
-                <span id="current-time" class="text-light"></span>
-            </div>
+            <button class="btn btn-light" onclick="cleanupAll()">
+                <i class="fas fa-broom me-2"></i>Clean Cache
+            </button>
         </div>
     </nav>
 
@@ -1477,18 +1822,23 @@ index_html = """
         <!-- Tabs -->
         <ul class="nav nav-tabs" id="ttsTabs" role="tablist">
             <li class="nav-item" role="presentation">
-                <button class="nav-link active" id="single-tab" data-bs-toggle="tab" data-bs-target="#single" type="button">
+                <button class="nav-link active" id="single-tab" data-bs-toggle="tab" data-bs-target="#single">
                     <i class="fas fa-user me-2"></i>Single Voice
                 </button>
             </li>
             <li class="nav-item" role="presentation">
-                <button class="nav-link" id="multi-tab" data-bs-toggle="tab" data-bs-target="#multi" type="button">
+                <button class="nav-link" id="multi-tab" data-bs-toggle="tab" data-bs-target="#multi">
                     <i class="fas fa-users me-2"></i>Multi-Voice
                 </button>
             </li>
             <li class="nav-item" role="presentation">
-                <button class="nav-link" id="qa-tab" data-bs-toggle="tab" data-bs-target="#qa" type="button">
+                <button class="nav-link" id="qa-tab" data-bs-toggle="tab" data-bs-target="#qa">
                     <i class="fas fa-comments me-2"></i>Q&A Dialogue
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="tasks-tab" data-bs-toggle="tab" data-bs-target="#tasks">
+                    <i class="fas fa-tasks me-2"></i>Tasks
                 </button>
             </li>
         </ul>
@@ -1496,23 +1846,16 @@ index_html = """
         <!-- Tab Content -->
         <div class="tab-content" id="ttsTabsContent">
             <!-- Single Voice Tab -->
-            <div class="tab-pane fade show active" id="single" role="tabpanel">
+            <div class="tab-pane fade show active" id="single">
                 <div class="row">
                     <div class="col-md-8">
                         <div class="mb-3">
-                            <label for="singleText" class="form-label">Text Content</label>
+                            <label class="form-label">Text Content</label>
                             <textarea class="form-control" id="singleText" rows="10" 
                                       placeholder="Enter your text here..."></textarea>
-                            <div class="mt-2">
-                                <small class="text-muted">
-                                    <i class="fas fa-info-circle me-1"></i>
-                                    Text will be automatically processed for proper pronunciation
-                                </small>
-                            </div>
                         </div>
                     </div>
                     <div class="col-md-4">
-                        <!-- Voice Selection -->
                         <div class="mb-3">
                             <label class="form-label">Language</label>
                             <select class="form-select" id="singleLanguage">
@@ -1531,41 +1874,41 @@ index_html = """
                         </div>
                         
                         <!-- Voice Settings -->
-                        <div class="accordion mb-3" id="singleSettings">
+                        <div class="accordion mb-3">
                             <div class="accordion-item">
                                 <h2 class="accordion-header">
-                                    <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#singleVoiceSettings">
+                                    <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#singleSettings">
                                         <i class="fas fa-sliders-h me-2"></i>Voice Settings
                                     </button>
                                 </h2>
-                                <div id="singleVoiceSettings" class="accordion-collapse collapse show">
+                                <div id="singleSettings" class="accordion-collapse collapse show">
                                     <div class="accordion-body">
                                         <div class="mb-3">
-                                            <label for="singleRate" class="form-label">
+                                            <label class="form-label">
                                                 Speed: <span id="singleRateValue">0%</span>
                                             </label>
                                             <input type="range" class="form-range" id="singleRate" min="-30" max="30" value="0">
                                         </div>
                                         
                                         <div class="mb-3">
-                                            <label for="singlePitch" class="form-label">
+                                            <label class="form-label">
                                                 Pitch: <span id="singlePitchValue">0Hz</span>
                                             </label>
                                             <input type="range" class="form-range" id="singlePitch" min="-30" max="30" value="0">
                                         </div>
                                         
                                         <div class="mb-3">
-                                            <label for="singleVolume" class="form-label">
+                                            <label class="form-label">
                                                 Volume: <span id="singleVolumeValue">100%</span>
                                             </label>
                                             <input type="range" class="form-range" id="singleVolume" min="50" max="150" value="100">
                                         </div>
                                         
                                         <div class="mb-3">
-                                            <label for="singlePause" class="form-label">
+                                            <label class="form-label">
                                                 Pause Duration: <span id="singlePauseValue">500ms</span>
                                             </label>
-                                            <input type="range" class="form-range" id="singlePause" min="100" max="2000" step="50" value="500">
+                                            <input type="range" class="form-range" id="singlePause" min="100" max="2000" value="500">
                                         </div>
                                         
                                         <div class="mb-3">
@@ -1581,9 +1924,20 @@ index_html = """
                             </div>
                         </div>
                         
-                        <button class="btn btn-primary w-100" id="singleGenerateBtn">
+                        <button class="btn btn-primary w-100" onclick="generateSingle()">
                             <i class="fas fa-play-circle me-2"></i>Generate Audio
                         </button>
+                        
+                        <!-- Task Status -->
+                        <div class="task-status" id="singleTaskStatus">
+                            <div class="progress-container">
+                                <div class="progress">
+                                    <div class="progress-bar" id="singleProgressBar" style="width: 0%"></div>
+                                </div>
+                                <div class="text-center mt-2" id="singleProgressText">0%</div>
+                            </div>
+                            <div id="singleTaskMessage"></div>
+                        </div>
                     </div>
                 </div>
                 
@@ -1603,302 +1957,77 @@ index_html = """
             </div>
 
             <!-- Multi-Voice Tab -->
-            <div class="tab-pane fade" id="multi" role="tabpanel">
+            <div class="tab-pane fade" id="multi">
                 <div class="row">
                     <div class="col-md-8">
                         <div class="mb-3">
-                            <label for="multiText" class="form-label">Dialogue Content</label>
+                            <label class="form-label">Dialogue Content</label>
                             <textarea class="form-control" id="multiText" rows="10" 
                                       placeholder="CHAR1: Dialogue for character 1&#10;CHAR2: Dialogue for character 2&#10;NARRATOR: Narration text"></textarea>
-                            <div class="mt-2">
-                                <small class="text-muted">
-                                    <i class="fas fa-info-circle me-1"></i>
-                                    Use CHAR1:, CHAR2:, or NARRATOR: prefixes for different characters
-                                </small>
-                            </div>
                         </div>
                     </div>
                     <div class="col-md-4">
-                        <!-- Character 1 Settings -->
-                        <div class="voice-card">
-                            <h6><span class="character-tag char1-tag">CHARACTER 1</span></h6>
-                            
-                            <!-- Language Selector for Character 1 -->
-                            <div class="language-selector">
-                                <label class="form-label small">Language</label>
-                                <select class="form-select multiLanguage" data-char="1">
-                                    <option value="">Select Language</option>
-                                    {% for language in languages %}
-                                    <option value="{{ language }}">{{ language }}</option>
-                                    {% endfor %}
-                                </select>
-                            </div>
-                            
-                            <!-- Voice Selector for Character 1 -->
-                            <div class="voice-selector">
-                                <label class="form-label small">Voice</label>
-                                <select class="form-select multiVoice" data-char="1">
-                                    <option value="">Select Voice</option>
-                                </select>
-                            </div>
-                            
-                            <div class="row">
-                                <div class="col-4">
-                                    <label class="form-label small">Speed</label>
-                                    <input type="range" class="form-range" data-setting="rate" data-char="1" min="-30" max="30" value="0">
-                                    <small class="d-block text-center"><span data-value="rate" data-char="1">0%</span></small>
-                                </div>
-                                <div class="col-4">
-                                    <label class="form-label small">Pitch</label>
-                                    <input type="range" class="form-range" data-setting="pitch" data-char="1" min="-30" max="30" value="0">
-                                    <small class="d-block text-center"><span data-value="pitch" data-char="1">0Hz</span></small>
-                                </div>
-                                <div class="col-4">
-                                    <label class="form-label small">Volume</label>
-                                    <input type="range" class="form-range" data-setting="volume" data-char="1" min="50" max="150" value="100">
-                                    <small class="d-block text-center"><span data-value="volume" data-char="1">100%</span></small>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <!-- Character 2 Settings -->
-                        <div class="voice-card">
-                            <h6><span class="character-tag char2-tag">CHARACTER 2</span></h6>
-                            
-                            <!-- Language Selector for Character 2 -->
-                            <div class="language-selector">
-                                <label class="form-label small">Language</label>
-                                <select class="form-select multiLanguage" data-char="2">
-                                    <option value="">Select Language</option>
-                                    {% for language in languages %}
-                                    <option value="{{ language }}">{{ language }}</option>
-                                    {% endfor %}
-                                </select>
-                            </div>
-                            
-                            <!-- Voice Selector for Character 2 -->
-                            <div class="voice-selector">
-                                <label class="form-label small">Voice</label>
-                                <select class="form-select multiVoice" data-char="2">
-                                    <option value="">Select Voice</option>
-                                </select>
-                            </div>
-                            
-                            <div class="row">
-                                <div class="col-4">
-                                    <label class="form-label small">Speed</label>
-                                    <input type="range" class="form-range" data-setting="rate" data-char="2" min="-30" max="30" value="-10">
-                                    <small class="d-block text-center"><span data-value="rate" data-char="2">-10%</span></small>
-                                </div>
-                                <div class="col-4">
-                                    <label class="form-label small">Pitch</label>
-                                    <input type="range" class="form-range" data-setting="pitch" data-char="2" min="-30" max="30" value="0">
-                                    <small class="d-block text-center"><span data-value="pitch" data-char="2">0Hz</span></small>
-                                </div>
-                                <div class="col-4">
-                                    <label class="form-label small">Volume</label>
-                                    <input type="range" class="form-range" data-setting="volume" data-char="2" min="50" max="150" value="100">
-                                    <small class="d-block text-center"><span data-value="volume" data-char="2">100%</span></small>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <!-- General Settings -->
-                        <div class="mb-3">
-                            <label for="multiPause" class="form-label">
-                                Pause Between Dialogues: <span id="multiPauseValue">500ms</span>
-                            </label>
-                            <input type="range" class="form-range" id="multiPause" min="100" max="2000" step="50" value="500">
-                        </div>
-                        
-                        <div class="mb-3">
-                            <label for="multiRepeat" class="form-label">
-                                Repeat Times: <span id="multiRepeatValue">1</span>
-                            </label>
-                            <input type="range" class="form-range" id="multiRepeat" min="1" max="5" value="1">
-                        </div>
-                        
-                        <div class="mb-3">
-                            <label class="form-label">Output Format</label>
-                            <select class="form-select" id="multiFormat">
-                                {% for format in formats %}
-                                <option value="{{ format }}">{{ format|upper }}</option>
-                                {% endfor %}
-                            </select>
-                        </div>
-                        
-                        <button class="btn btn-primary w-100" id="multiGenerateBtn">
+                        <!-- Character Settings and Generate Button -->
+                        <button class="btn btn-primary w-100 mb-3" onclick="generateMulti()">
                             <i class="fas fa-users me-2"></i>Generate Multi-Voice Audio
                         </button>
-                    </div>
-                </div>
-                
-                <!-- Output Section -->
-                <div class="output-card mt-4" id="multiOutput" style="display: none;">
-                    <h5><i class="fas fa-users me-2"></i>Generated Multi-Voice Audio</h5>
-                    <div class="audio-player" id="multiAudioPlayer"></div>
-                    <div class="mt-3">
-                        <a href="#" class="btn btn-success me-2" id="multiDownloadAudio">
-                            <i class="fas fa-download me-2"></i>Download Audio
-                        </a>
-                        <a href="#" class="btn btn-info" id="multiDownloadSubtitle" style="display: none;">
-                            <i class="fas fa-file-alt me-2"></i>Download Subtitles
-                        </a>
+                        
+                        <!-- Task Status -->
+                        <div class="task-status" id="multiTaskStatus">
+                            <div class="progress-container">
+                                <div class="progress">
+                                    <div class="progress-bar" id="multiProgressBar" style="width: 0%"></div>
+                                </div>
+                                <div class="text-center mt-2" id="multiProgressText">0%</div>
+                            </div>
+                            <div id="multiTaskMessage"></div>
+                        </div>
                     </div>
                 </div>
             </div>
 
             <!-- Q&A Dialogue Tab -->
-            <div class="tab-pane fade" id="qa" role="tabpanel">
+            <div class="tab-pane fade" id="qa">
                 <div class="row">
                     <div class="col-md-8">
                         <div class="mb-3">
-                            <label for="qaText" class="form-label">Q&A Content</label>
+                            <label class="form-label">Q&A Content</label>
                             <textarea class="form-control" id="qaText" rows="10" 
                                       placeholder="Q: Question text&#10;A: Answer text&#10;Q: Next question&#10;A: Next answer"></textarea>
-                            <div class="mt-2">
-                                <small class="text-muted">
-                                    <i class="fas fa-info-circle me-1"></i>
-                                    Use Q: for questions and A: for answers
-                                </small>
-                            </div>
                         </div>
                     </div>
                     <div class="col-md-4">
-                        <!-- Question Settings -->
-                        <div class="voice-card">
-                            <h6><span class="character-tag q-tag">QUESTION</span></h6>
-                            
-                            <!-- Language Selector for Question -->
-                            <div class="language-selector">
-                                <label class="form-label small">Language</label>
-                                <select class="form-select qaLanguage" data-type="question">
-                                    <option value="">Select Language</option>
-                                    {% for language in languages %}
-                                    <option value="{{ language }}">{{ language }}</option>
-                                    {% endfor %}
-                                </select>
-                            </div>
-                            
-                            <!-- Voice Selector for Question -->
-                            <div class="voice-selector">
-                                <label class="form-label small">Voice</label>
-                                <select class="form-select qaVoice" data-type="question">
-                                    <option value="">Select Voice</option>
-                                </select>
-                            </div>
-                            
-                            <div class="row">
-                                <div class="col-4">
-                                    <label class="form-label small">Speed</label>
-                                    <input type="range" class="form-range" data-setting="rate" data-type="question" min="-30" max="30" value="0">
-                                    <small class="d-block text-center"><span data-value="rate" data-type="question">0%</span></small>
-                                </div>
-                                <div class="col-4">
-                                    <label class="form-label small">Pitch</label>
-                                    <input type="range" class="form-range" data-setting="pitch" data-type="question" min="-30" max="30" value="0">
-                                    <small class="d-block text-center"><span data-value="pitch" data-type="question">0Hz</span></small>
-                                </div>
-                                <div class="col-4">
-                                    <label class="form-label small">Volume</label>
-                                    <input type="range" class="form-range" data-setting="volume" data-type="question" min="50" max="150" value="100">
-                                    <small class="d-block text-center"><span data-value="volume" data-type="question">100%</span></small>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <!-- Answer Settings -->
-                        <div class="voice-card">
-                            <h6><span class="character-tag a-tag">ANSWER</span></h6>
-                            
-                            <!-- Language Selector for Answer -->
-                            <div class="language-selector">
-                                <label class="form-label small">Language</label>
-                                <select class="form-select qaLanguage" data-type="answer">
-                                    <option value="">Select Language</option>
-                                    {% for language in languages %}
-                                    <option value="{{ language }}">{{ language }}</option>
-                                    {% endfor %}
-                                </select>
-                            </div>
-                            
-                            <!-- Voice Selector for Answer -->
-                            <div class="voice-selector">
-                                <label class="form-label small">Voice</label>
-                                <select class="form-select qaVoice" data-type="answer">
-                                    <option value="">Select Voice</option>
-                                </select>
-                            </div>
-                            
-                            <div class="row">
-                                <div class="col-4">
-                                    <label class="form-label small">Speed</label>
-                                    <input type="range" class="form-range" data-setting="rate" data-type="answer" min="-30" max="30" value="-10">
-                                    <small class="d-block text-center"><span data-value="rate" data-type="answer">-10%</span></small>
-                                </div>
-                                <div class="col-4">
-                                    <label class="form-label small">Pitch</label>
-                                    <input type="range" class="form-range" data-setting="pitch" data-type="answer" min="-30" max="30" value="0">
-                                    <small class="d-block text-center"><span data-value="pitch" data-type="answer">0Hz</span></small>
-                                </div>
-                                <div class="col-4">
-                                    <label class="form-label small">Volume</label>
-                                    <input type="range" class="form-range" data-setting="volume" data-type="answer" min="50" max="150" value="100">
-                                    <small class="d-block text-center"><span data-value="volume" data-type="answer">100%</span></small>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <!-- Q&A Settings -->
-                        <div class="mb-3">
-                            <label for="qaPauseQ" class="form-label">
-                                Pause After Question: <span id="qaPauseQValue">200ms</span>
-                            </label>
-                            <input type="range" class="form-range" id="qaPauseQ" min="100" max="1000" step="50" value="200">
-                        </div>
-                        
-                        <div class="mb-3">
-                            <label for="qaPauseA" class="form-label">
-                                Pause After Answer: <span id="qaPauseAValue">500ms</span>
-                            </label>
-                            <input type="range" class="form-range" id="qaPauseA" min="100" max="2000" step="50" value="500">
-                        </div>
-                        
-                        <div class="mb-3">
-                            <label for="qaRepeat" class="form-label">
-                                Repeat Times: <span id="qaRepeatValue">2</span>
-                            </label>
-                            <input type="range" class="form-range" id="qaRepeat" min="1" max="5" value="2">
-                        </div>
-                        
-                        <div class="mb-3">
-                            <label class="form-label">Output Format</label>
-                            <select class="form-select" id="qaFormat">
-                                {% for format in formats %}
-                                <option value="{{ format }}">{{ format|upper }}</option>
-                                {% endfor %}
-                            </select>
-                        </div>
-                        
-                        <button class="btn btn-primary w-100" id="qaGenerateBtn">
+                        <!-- Generate Button -->
+                        <button class="btn btn-primary w-100 mb-3" onclick="generateQA()">
                             <i class="fas fa-comments me-2"></i>Generate Q&A Audio
                         </button>
+                        
+                        <!-- Task Status -->
+                        <div class="task-status" id="qaTaskStatus">
+                            <div class="progress-container">
+                                <div class="progress">
+                                    <div class="progress-bar" id="qaProgressBar" style="width: 0%"></div>
+                                </div>
+                                <div class="text-center mt-2" id="qaProgressText">0%</div>
+                            </div>
+                            <div id="qaTaskMessage"></div>
+                        </div>
                     </div>
                 </div>
-                
-                <!-- Output Section -->
-                <div class="output-card mt-4" id="qaOutput" style="display: none;">
-                    <h5><i class="fas fa-comments me-2"></i>Generated Q&A Audio</h5>
-                    <div class="audio-player" id="qaAudioPlayer"></div>
-                    <div class="mt-3">
-                        <a href="#" class="btn btn-success me-2" id="qaDownloadAudio">
-                            <i class="fas fa-download me-2"></i>Download Audio
-                        </a>
-                        <a href="#" class="btn btn-info" id="qaDownloadSubtitle" style="display: none;">
-                            <i class="fas fa-file-alt me-2"></i>Download Subtitles
-                        </a>
+            </div>
+
+            <!-- Tasks Tab -->
+            <div class="tab-pane fade" id="tasks">
+                <h5><i class="fas fa-tasks me-2"></i>Active Tasks</h5>
+                <div id="tasksList">
+                    <div class="text-center text-muted py-4">
+                        <i class="fas fa-clock fa-2x mb-3"></i>
+                        <p>No active tasks</p>
                     </div>
                 </div>
+                <button class="btn btn-secondary mt-3" onclick="refreshTasks()">
+                    <i class="fas fa-sync-alt me-2"></i>Refresh Tasks
+                </button>
             </div>
         </div>
     </div>
@@ -1914,207 +2043,25 @@ index_html = """
     <!-- Scripts -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        // Current time display
-        function updateTime() {
-            const now = new Date();
-            document.getElementById('current-time').textContent = 
-                now.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
-        }
-        setInterval(updateTime, 1000);
-        updateTime();
-
-        // Voice data cache
-        let voicesCache = {};
+        // Global variables
+        let currentTaskId = null;
+        let taskCheckInterval = null;
         
-        // Load voices for a language
-        async function loadVoices(language, targetSelect) {
-            try {
-                const response = await fetch(`/api/voices?language=${encodeURIComponent(language)}`);
-                const data = await response.json();
-                
-                if (targetSelect) {
-                    targetSelect.innerHTML = '<option value="">Select Voice</option>';
-                    
-                    data.voices.forEach(voice => {
-                        const option = document.createElement('option');
-                        option.value = voice.name;
-                        option.textContent = `${voice.display} (${voice.gender})`;
-                        targetSelect.appendChild(option);
-                    });
-                    
-                    // Cache voices
-                    voicesCache[language] = data.voices;
-                }
-                return data.voices;
-            } catch (error) {
-                console.error('Error loading voices:', error);
-                showToast('Error loading voices', 'error');
-                return [];
-            }
-        }
-
-        // Show toast notification
-        function showToast(message, type = 'info') {
-            const toastContainer = document.querySelector('.toast-container');
-            const toastId = 'toast-' + Date.now();
+        // Initialize
+        document.addEventListener('DOMContentLoaded', async function() {
+            // Load settings and voices
+            await loadSettings();
+            await loadVoices();
             
-            const toastHtml = `
-                <div id="${toastId}" class="toast align-items-center text-white bg-${type === 'error' ? 'danger' : 'success'} border-0" role="alert">
-                    <div class="d-flex">
-                        <div class="toast-body">
-                            <i class="fas ${type === 'error' ? 'fa-exclamation-circle' : 'fa-check-circle'} me-2"></i>
-                            ${message}
-                        </div>
-                        <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
-                    </div>
-                </div>
-            `;
+            // Initialize range displays
+            initRangeDisplays();
             
-            toastContainer.insertAdjacentHTML('beforeend', toastHtml);
-            const toastElement = document.getElementById(toastId);
-            const toast = new bootstrap.Toast(toastElement, { delay: 3000 });
-            toast.show();
-            
-            toastElement.addEventListener('hidden.bs.toast', () => {
-                toastElement.remove();
-            });
-        }
-
-        // Show loading overlay
-        function showLoading() {
-            document.getElementById('loadingOverlay').style.display = 'flex';
-        }
-
-        // Hide loading overlay
-        function hideLoading() {
-            document.getElementById('loadingOverlay').style.display = 'none';
-        }
-
-        // Update range value display
-        function updateRangeDisplay(inputId, valueId, suffix = '') {
-            const input = document.getElementById(inputId);
-            const display = document.getElementById(valueId);
-            
-            if (input && display) {
-                input.addEventListener('input', () => {
-                    display.textContent = input.value + suffix;
-                });
-                display.textContent = input.value + suffix;
-            }
-        }
-
-        // Initialize range displays
-        updateRangeDisplay('singleRate', 'singleRateValue', '%');
-        updateRangeDisplay('singlePitch', 'singlePitchValue', 'Hz');
-        updateRangeDisplay('singleVolume', 'singleVolumeValue', '%');
-        updateRangeDisplay('singlePause', 'singlePauseValue', 'ms');
-        updateRangeDisplay('multiPause', 'multiPauseValue', 'ms');
-        updateRangeDisplay('multiRepeat', 'multiRepeatValue', 'x');
-        updateRangeDisplay('qaPauseQ', 'qaPauseQValue', 'ms');
-        updateRangeDisplay('qaPauseA', 'qaPauseAValue', 'ms');
-        updateRangeDisplay('qaRepeat', 'qaRepeatValue', 'x');
-
-        // Update multi-voice range displays
-        document.querySelectorAll('[data-value][data-char]').forEach(span => {
-            const char = span.dataset.char;
-            const setting = span.dataset.value;
-            const input = document.querySelector(`[data-setting="${setting}"][data-char="${char}"]`);
-            
-            if (input && span) {
-                const suffix = setting === 'rate' ? '%' : setting === 'pitch' ? 'Hz' : '%';
-                span.textContent = input.value + suffix;
-                
-                input.addEventListener('input', () => {
-                    span.textContent = input.value + suffix;
-                });
-            }
+            // Auto cleanup on load
+            await cleanupOldFiles();
         });
-
-        // Update Q&A range displays
-        document.querySelectorAll('[data-value][data-type]').forEach(span => {
-            const type = span.dataset.type;
-            const setting = span.dataset.value;
-            const input = document.querySelector(`[data-setting="${setting}"][data-type="${type}"]`);
-            
-            if (input && span) {
-                const suffix = setting === 'rate' ? '%' : setting === 'pitch' ? 'Hz' : '%';
-                span.textContent = input.value + suffix;
-                
-                input.addEventListener('input', () => {
-                    span.textContent = input.value + suffix;
-                });
-            }
-        });
-
-        // Load voices when language changes (Single Voice)
-        document.getElementById('singleLanguage').addEventListener('change', async function() {
-            if (this.value) {
-                await loadVoices(this.value, document.getElementById('singleVoice'));
-            } else {
-                document.getElementById('singleVoice').innerHTML = '<option value="">Select Voice</option>';
-            }
-        });
-
-        // Load voices when language changes (Multi-Voice)
-        document.querySelectorAll('.multiLanguage').forEach(select => {
-            select.addEventListener('change', async function() {
-                const char = this.dataset.char;
-                const targetVoiceSelect = document.querySelector(`.multiVoice[data-char="${char}"]`);
-                
-                if (this.value) {
-                    await loadVoices(this.value, targetVoiceSelect);
-                } else {
-                    targetVoiceSelect.innerHTML = '<option value="">Select Voice</option>';
-                }
-            });
-        });
-
-        // Load voices when language changes (Q&A)
-        document.querySelectorAll('.qaLanguage').forEach(select => {
-            select.addEventListener('change', async function() {
-                const type = this.dataset.type;
-                const targetVoiceSelect = document.querySelector(`.qaVoice[data-type="${type}"]`);
-                
-                if (this.value) {
-                    await loadVoices(this.value, targetVoiceSelect);
-                } else {
-                    targetVoiceSelect.innerHTML = '<option value="">Select Voice</option>';
-                }
-            });
-        });
-
-        // Load default voices on page load
-        window.addEventListener('DOMContentLoaded', async () => {
-            // Load Vietnamese voices by default for all tabs
-            const defaultLanguage = 'Tiếng Việt';
-            
-            // Single Voice Tab
-            document.getElementById('singleLanguage').value = defaultLanguage;
-            await loadVoices(defaultLanguage, document.getElementById('singleVoice'));
-            
-            // Multi-Voice Tab
-            const multiLanguageSelects = document.querySelectorAll('.multiLanguage');
-            multiLanguageSelects.forEach(select => {
-                select.value = defaultLanguage;
-            });
-            
-            const multiVoiceSelects = document.querySelectorAll('.multiVoice');
-            for (const select of multiVoiceSelects) {
-                await loadVoices(defaultLanguage, select);
-            }
-            
-            // Q&A Tab
-            const qaLanguageSelects = document.querySelectorAll('.qaLanguage');
-            qaLanguageSelects.forEach(select => {
-                select.value = defaultLanguage;
-            });
-            
-            const qaVoiceSelects = document.querySelectorAll('.qaVoice');
-            for (const select of qaVoiceSelects) {
-                await loadVoices(defaultLanguage, select);
-            }
-            
-            // Load saved settings
+        
+        // Load settings
+        async function loadSettings() {
             try {
                 const response = await fetch('/api/settings');
                 const settings = await response.json();
@@ -2128,89 +2075,73 @@ index_html = """
                     document.getElementById('singlePause').value = sv.pause;
                     
                     // Trigger updates
-                    document.getElementById('singleRate').dispatchEvent(new Event('input'));
-                    document.getElementById('singlePitch').dispatchEvent(new Event('input'));
-                    document.getElementById('singleVolume').dispatchEvent(new Event('input'));
-                    document.getElementById('singlePause').dispatchEvent(new Event('input'));
-                }
-                
-                // Apply multi-voice settings
-                if (settings.multi_voice) {
-                    const mv = settings.multi_voice;
-                    
-                    // Character 1 settings
-                    if (mv.char1) {
-                        document.querySelector('.multiLanguage[data-char="1"]').value = mv.char1.language || 'Tiếng Việt';
-                        document.querySelector('.multiVoice[data-char="1"]').value = mv.char1.voice;
-                        document.querySelector('[data-setting="rate"][data-char="1"]').value = mv.char1.rate;
-                        document.querySelector('[data-setting="pitch"][data-char="1"]').value = mv.char1.pitch;
-                        document.querySelector('[data-setting="volume"][data-char="1"]').value = mv.char1.volume;
-                    }
-                    
-                    // Character 2 settings
-                    if (mv.char2) {
-                        document.querySelector('.multiLanguage[data-char="2"]').value = mv.char2.language || 'Tiếng Việt';
-                        document.querySelector('.multiVoice[data-char="2"]').value = mv.char2.voice;
-                        document.querySelector('[data-setting="rate"][data-char="2"]').value = mv.char2.rate;
-                        document.querySelector('[data-setting="pitch"][data-char="2"]').value = mv.char2.pitch;
-                        document.querySelector('[data-setting="volume"][data-char="2"]').value = mv.char2.volume;
-                    }
-                    
-                    document.getElementById('multiPause').value = mv.pause;
-                    document.getElementById('multiRepeat').value = mv.repeat;
-                    
-                    document.getElementById('multiPause').dispatchEvent(new Event('input'));
-                    document.getElementById('multiRepeat').dispatchEvent(new Event('input'));
-                }
-                
-                // Apply Q&A settings
-                if (settings.qa_voice) {
-                    const qv = settings.qa_voice;
-                    
-                    // Question settings
-                    if (qv.question) {
-                        document.querySelector('.qaLanguage[data-type="question"]').value = qv.question.language || 'Tiếng Việt';
-                        document.querySelector('.qaVoice[data-type="question"]').value = qv.question.voice;
-                        document.querySelector('[data-setting="rate"][data-type="question"]').value = qv.question.rate;
-                        document.querySelector('[data-setting="pitch"][data-type="question"]').value = qv.question.pitch;
-                        document.querySelector('[data-setting="volume"][data-type="question"]').value = qv.question.volume;
-                    }
-                    
-                    // Answer settings
-                    if (qv.answer) {
-                        document.querySelector('.qaLanguage[data-type="answer"]').value = qv.answer.language || 'Tiếng Việt';
-                        document.querySelector('.qaVoice[data-type="answer"]').value = qv.answer.voice;
-                        document.querySelector('[data-setting="rate"][data-type="answer"]').value = qv.answer.rate;
-                        document.querySelector('[data-setting="pitch"][data-type="answer"]').value = qv.answer.pitch;
-                        document.querySelector('[data-setting="volume"][data-type="answer"]').value = qv.answer.volume;
-                    }
-                    
-                    document.getElementById('qaPauseQ').value = qv.pause_q;
-                    document.getElementById('qaPauseA').value = qv.pause_a;
-                    document.getElementById('qaRepeat').value = qv.repeat;
-                    
-                    document.getElementById('qaPauseQ').dispatchEvent(new Event('input'));
-                    document.getElementById('qaPauseA').dispatchEvent(new Event('input'));
-                    document.getElementById('qaRepeat').dispatchEvent(new Event('input'));
+                    ['singleRate', 'singlePitch', 'singleVolume', 'singlePause'].forEach(id => {
+                        document.getElementById(id).dispatchEvent(new Event('input'));
+                    });
                 }
             } catch (error) {
                 console.error('Error loading settings:', error);
             }
-        });
-
+        }
+        
+        // Load voices
+        async function loadVoices() {
+            try {
+                const response = await fetch('/api/voices');
+                const data = await response.json();
+                
+                const voiceSelect = document.getElementById('singleVoice');
+                voiceSelect.innerHTML = '<option value="">Select Voice</option>';
+                
+                data.voices.forEach(voice => {
+                    const option = document.createElement('option');
+                    option.value = voice.name;
+                    option.textContent = `${voice.display} (${voice.gender})`;
+                    voiceSelect.appendChild(option);
+                });
+                
+                // Set default Vietnamese voice
+                const viVoice = data.voices.find(v => v.name === 'vi-VN-HoaiMyNeural');
+                if (viVoice) {
+                    voiceSelect.value = viVoice.name;
+                }
+            } catch (error) {
+                console.error('Error loading voices:', error);
+            }
+        }
+        
+        // Initialize range displays
+        function initRangeDisplays() {
+            const ranges = [
+                { id: 'singleRate', display: 'singleRateValue', suffix: '%' },
+                { id: 'singlePitch', display: 'singlePitchValue', suffix: 'Hz' },
+                { id: 'singleVolume', display: 'singleVolumeValue', suffix: '%' },
+                { id: 'singlePause', display: 'singlePauseValue', suffix: 'ms' }
+            ];
+            
+            ranges.forEach(range => {
+                const input = document.getElementById(range.id);
+                const display = document.getElementById(range.display);
+                
+                if (input && display) {
+                    // Set initial value
+                    display.textContent = input.value + range.suffix;
+                    
+                    // Update on change
+                    input.addEventListener('input', () => {
+                        display.textContent = input.value + range.suffix;
+                    });
+                }
+            });
+        }
+        
         // Generate single voice audio
-        document.getElementById('singleGenerateBtn').addEventListener('click', async function() {
+        async function generateSingle() {
             const text = document.getElementById('singleText').value.trim();
             const voice = document.getElementById('singleVoice').value;
-            const language = document.getElementById('singleLanguage').value;
             
             if (!text) {
                 showToast('Please enter text', 'error');
-                return;
-            }
-            
-            if (!language) {
-                showToast('Please select a language', 'error');
                 return;
             }
             
@@ -2239,26 +2170,9 @@ index_html = """
                 const result = await response.json();
                 
                 if (result.success) {
-                    // Show audio player
-                    const audioPlayer = document.getElementById('singleAudioPlayer');
-                    audioPlayer.innerHTML = `
-                        <audio controls class="w-100">
-                            <source src="${result.audio_url}" type="audio/mpeg">
-                            Your browser does not support the audio element.
-                        </audio>
-                    `;
-                    
-                    // Show download buttons
-                    document.getElementById('singleDownloadAudio').href = result.audio_url;
-                    if (result.srt_url) {
-                        document.getElementById('singleDownloadSubtitle').href = result.srt_url;
-                        document.getElementById('singleDownloadSubtitle').style.display = 'inline-block';
-                    }
-                    
-                    // Show output section
-                    document.getElementById('singleOutput').style.display = 'block';
-                    
-                    showToast(result.message);
+                    currentTaskId = result.task_id;
+                    showTaskStatus('single', result.task_id);
+                    showToast('Audio generation started');
                 } else {
                     showToast(result.message || 'Generation failed', 'error');
                 }
@@ -2268,10 +2182,10 @@ index_html = """
             } finally {
                 hideLoading();
             }
-        });
-
+        }
+        
         // Generate multi-voice audio
-        document.getElementById('multiGenerateBtn').addEventListener('click', async function() {
+        async function generateMulti() {
             const text = document.getElementById('multiText').value.trim();
             
             if (!text) {
@@ -2279,55 +2193,24 @@ index_html = """
                 return;
             }
             
-            // Get character 1 settings
-            const char1LanguageSelect = document.querySelector('.multiLanguage[data-char="1"]');
-            const char1VoiceSelect = document.querySelector('.multiVoice[data-char="1"]');
-            const char1Language = char1LanguageSelect.value;
-            const char1Voice = char1VoiceSelect.value;
-            
-            if (!char1Language) {
-                showToast('Please select language for Character 1', 'error');
-                return;
-            }
-            
-            if (!char1Voice) {
-                showToast('Please select voice for Character 1', 'error');
-                return;
-            }
-            
-            // Get character 2 settings
-            const char2LanguageSelect = document.querySelector('.multiLanguage[data-char="2"]');
-            const char2VoiceSelect = document.querySelector('.multiVoice[data-char="2"]');
-            const char2Language = char2LanguageSelect.value;
-            const char2Voice = char2VoiceSelect.value;
-            
-            if (!char2Language) {
-                showToast('Please select language for Character 2', 'error');
-                return;
-            }
-            
-            if (!char2Voice) {
-                showToast('Please select voice for Character 2', 'error');
-                return;
-            }
-            
+            // For simplicity, using default settings
             showLoading();
             
             const formData = new FormData();
             formData.append('text', text);
-            formData.append('char1_language', char1Language);
-            formData.append('char1_voice', char1Voice);
-            formData.append('char1_rate', document.querySelector('[data-setting="rate"][data-char="1"]').value);
-            formData.append('char1_pitch', document.querySelector('[data-setting="pitch"][data-char="1"]').value);
-            formData.append('char1_volume', document.querySelector('[data-setting="volume"][data-char="1"]').value);
-            formData.append('char2_language', char2Language);
-            formData.append('char2_voice', char2Voice);
-            formData.append('char2_rate', document.querySelector('[data-setting="rate"][data-char="2"]').value);
-            formData.append('char2_pitch', document.querySelector('[data-setting="pitch"][data-char="2"]').value);
-            formData.append('char2_volume', document.querySelector('[data-setting="volume"][data-char="2"]').value);
-            formData.append('pause', document.getElementById('multiPause').value);
-            formData.append('repeat', document.getElementById('multiRepeat').value);
-            formData.append('output_format', document.getElementById('multiFormat').value);
+            formData.append('char1_language', 'Tiếng Việt');
+            formData.append('char1_voice', 'vi-VN-HoaiMyNeural');
+            formData.append('char1_rate', 0);
+            formData.append('char1_pitch', 0);
+            formData.append('char1_volume', 100);
+            formData.append('char2_language', 'Tiếng Việt');
+            formData.append('char2_voice', 'vi-VN-NamMinhNeural');
+            formData.append('char2_rate', -10);
+            formData.append('char2_pitch', 0);
+            formData.append('char2_volume', 100);
+            formData.append('pause', 500);
+            formData.append('repeat', 1);
+            formData.append('output_format', 'mp3');
             
             try {
                 const response = await fetch('/api/generate/multi', {
@@ -2338,26 +2221,9 @@ index_html = """
                 const result = await response.json();
                 
                 if (result.success) {
-                    // Show audio player
-                    const audioPlayer = document.getElementById('multiAudioPlayer');
-                    audioPlayer.innerHTML = `
-                        <audio controls class="w-100">
-                            <source src="${result.audio_url}" type="audio/mpeg">
-                            Your browser does not support the audio element.
-                        </audio>
-                    `;
-                    
-                    // Show download buttons
-                    document.getElementById('multiDownloadAudio').href = result.audio_url;
-                    if (result.srt_url) {
-                        document.getElementById('multiDownloadSubtitle').href = result.srt_url;
-                        document.getElementById('multiDownloadSubtitle').style.display = 'inline-block';
-                    }
-                    
-                    // Show output section
-                    document.getElementById('multiOutput').style.display = 'block';
-                    
-                    showToast(result.message);
+                    currentTaskId = result.task_id;
+                    showTaskStatus('multi', result.task_id);
+                    showToast('Multi-voice audio generation started');
                 } else {
                     showToast(result.message || 'Generation failed', 'error');
                 }
@@ -2367,10 +2233,10 @@ index_html = """
             } finally {
                 hideLoading();
             }
-        });
-
+        }
+        
         // Generate Q&A audio
-        document.getElementById('qaGenerateBtn').addEventListener('click', async function() {
+        async function generateQA() {
             const text = document.getElementById('qaText').value.trim();
             
             if (!text) {
@@ -2378,56 +2244,24 @@ index_html = """
                 return;
             }
             
-            // Get question settings
-            const questionLanguageSelect = document.querySelector('.qaLanguage[data-type="question"]');
-            const questionVoiceSelect = document.querySelector('.qaVoice[data-type="question"]');
-            const questionLanguage = questionLanguageSelect.value;
-            const questionVoice = questionVoiceSelect.value;
-            
-            if (!questionLanguage) {
-                showToast('Please select language for Questions', 'error');
-                return;
-            }
-            
-            if (!questionVoice) {
-                showToast('Please select voice for Questions', 'error');
-                return;
-            }
-            
-            // Get answer settings
-            const answerLanguageSelect = document.querySelector('.qaLanguage[data-type="answer"]');
-            const answerVoiceSelect = document.querySelector('.qaVoice[data-type="answer"]');
-            const answerLanguage = answerLanguageSelect.value;
-            const answerVoice = answerVoiceSelect.value;
-            
-            if (!answerLanguage) {
-                showToast('Please select language for Answers', 'error');
-                return;
-            }
-            
-            if (!answerVoice) {
-                showToast('Please select voice for Answers', 'error');
-                return;
-            }
-            
             showLoading();
             
             const formData = new FormData();
             formData.append('text', text);
-            formData.append('question_language', questionLanguage);
-            formData.append('question_voice', questionVoice);
-            formData.append('question_rate', document.querySelector('[data-setting="rate"][data-type="question"]').value);
-            formData.append('question_pitch', document.querySelector('[data-setting="pitch"][data-type="question"]').value);
-            formData.append('question_volume', document.querySelector('[data-setting="volume"][data-type="question"]').value);
-            formData.append('answer_language', answerLanguage);
-            formData.append('answer_voice', answerVoice);
-            formData.append('answer_rate', document.querySelector('[data-setting="rate"][data-type="answer"]').value);
-            formData.append('answer_pitch', document.querySelector('[data-setting="pitch"][data-type="answer"]').value);
-            formData.append('answer_volume', document.querySelector('[data-setting="volume"][data-type="answer"]').value);
-            formData.append('pause_q', document.getElementById('qaPauseQ').value);
-            formData.append('pause_a', document.getElementById('qaPauseA').value);
-            formData.append('repeat', document.getElementById('qaRepeat').value);
-            formData.append('output_format', document.getElementById('qaFormat').value);
+            formData.append('question_language', 'Tiếng Việt');
+            formData.append('question_voice', 'vi-VN-HoaiMyNeural');
+            formData.append('question_rate', 0);
+            formData.append('question_pitch', 0);
+            formData.append('question_volume', 100);
+            formData.append('answer_language', 'Tiếng Việt');
+            formData.append('answer_voice', 'vi-VN-NamMinhNeural');
+            formData.append('answer_rate', -10);
+            formData.append('answer_pitch', 0);
+            formData.append('answer_volume', 100);
+            formData.append('pause_q', 200);
+            formData.append('pause_a', 500);
+            formData.append('repeat', 2);
+            formData.append('output_format', 'mp3');
             
             try {
                 const response = await fetch('/api/generate/qa', {
@@ -2438,26 +2272,9 @@ index_html = """
                 const result = await response.json();
                 
                 if (result.success) {
-                    // Show audio player
-                    const audioPlayer = document.getElementById('qaAudioPlayer');
-                    audioPlayer.innerHTML = `
-                        <audio controls class="w-100">
-                            <source src="${result.audio_url}" type="audio/mpeg">
-                            Your browser does not support the audio element.
-                        </audio>
-                    `;
-                    
-                    // Show download buttons
-                    document.getElementById('qaDownloadAudio').href = result.audio_url;
-                    if (result.srt_url) {
-                        document.getElementById('qaDownloadSubtitle').href = result.srt_url;
-                        document.getElementById('qaDownloadSubtitle').style.display = 'inline-block';
-                    }
-                    
-                    // Show output section
-                    document.getElementById('qaOutput').style.display = 'block';
-                    
-                    showToast(result.message);
+                    currentTaskId = result.task_id;
+                    showTaskStatus('qa', result.task_id);
+                    showToast('Q&A audio generation started');
                 } else {
                     showToast(result.message || 'Generation failed', 'error');
                 }
@@ -2467,93 +2284,210 @@ index_html = """
             } finally {
                 hideLoading();
             }
-        });
-
-        // Auto-cleanup on page load
-        window.addEventListener('load', () => {
-            fetch('/api/cleanup', { method: 'POST' }).catch(console.error);
-        });
+        }
+        
+        // Show task status and poll for updates
+        function showTaskStatus(type, taskId) {
+            const statusDiv = document.getElementById(`${type}TaskStatus`);
+            const progressBar = document.getElementById(`${type}ProgressBar`);
+            const progressText = document.getElementById(`${type}ProgressText`);
+            const taskMessage = document.getElementById(`${type}TaskMessage`);
+            
+            statusDiv.style.display = 'block';
+            progressBar.style.width = '0%';
+            progressText.textContent = '0%';
+            taskMessage.textContent = 'Starting...';
+            
+            // Clear existing interval
+            if (taskCheckInterval) {
+                clearInterval(taskCheckInterval);
+            }
+            
+            // Poll for task updates
+            taskCheckInterval = setInterval(async () => {
+                try {
+                    const response = await fetch(`/api/task/${taskId}`);
+                    const task = await response.json();
+                    
+                    progressBar.style.width = `${task.progress}%`;
+                    progressText.textContent = `${task.progress}%`;
+                    taskMessage.textContent = task.message;
+                    
+                    if (task.status === 'completed') {
+                        clearInterval(taskCheckInterval);
+                        
+                        if (task.result && task.result.success) {
+                            showToast(task.result.message);
+                            
+                            // Show output for single voice
+                            if (type === 'single') {
+                                showSingleOutput(task.result);
+                            }
+                        }
+                        
+                        // Hide status after 5 seconds
+                        setTimeout(() => {
+                            statusDiv.style.display = 'none';
+                        }, 5000);
+                    } else if (task.status === 'failed') {
+                        clearInterval(taskCheckInterval);
+                        showToast(task.message, 'error');
+                        
+                        // Hide status after 3 seconds
+                        setTimeout(() => {
+                            statusDiv.style.display = 'none';
+                        }, 3000);
+                    }
+                } catch (error) {
+                    console.error('Error checking task status:', error);
+                }
+            }, 1000);
+        }
+        
+        // Show single voice output
+        function showSingleOutput(result) {
+            const outputDiv = document.getElementById('singleOutput');
+            const audioPlayer = document.getElementById('singleAudioPlayer');
+            const downloadAudio = document.getElementById('singleDownloadAudio');
+            const downloadSubtitle = document.getElementById('singleDownloadSubtitle');
+            
+            // Add timestamp to avoid cache
+            const timestamp = new Date().getTime();
+            const audioUrl = `${result.audio_url}?t=${timestamp}`;
+            
+            audioPlayer.innerHTML = `
+                <audio controls class="w-100">
+                    <source src="${audioUrl}" type="audio/mpeg">
+                    Your browser does not support the audio element.
+                </audio>
+            `;
+            
+            downloadAudio.href = result.audio_url;
+            
+            if (result.srt_url) {
+                downloadSubtitle.href = result.srt_url;
+                downloadSubtitle.style.display = 'inline-block';
+            } else {
+                downloadSubtitle.style.display = 'none';
+            }
+            
+            outputDiv.style.display = 'block';
+        }
+        
+        // Cleanup old files
+        async function cleanupOldFiles() {
+            try {
+                await fetch('/api/cleanup', { method: 'POST' });
+            } catch (error) {
+                console.error('Error cleaning up:', error);
+            }
+        }
+        
+        // Cleanup all cache
+        async function cleanupAll() {
+            if (confirm('Are you sure you want to clear all cache and temporary files?')) {
+                showLoading();
+                try {
+                    const response = await fetch('/api/cleanup/all', { method: 'POST' });
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        showToast('All cache cleared successfully');
+                    } else {
+                        showToast(result.message, 'error');
+                    }
+                } catch (error) {
+                    console.error('Error cleaning up:', error);
+                    showToast('Error clearing cache', 'error');
+                } finally {
+                    hideLoading();
+                }
+            }
+        }
+        
+        // Refresh tasks list
+        async function refreshTasks() {
+            // This would normally fetch from an API endpoint that lists all tasks
+            showToast('Task list refreshed');
+        }
+        
+        // Utility functions
+        function showLoading() {
+            document.getElementById('loadingOverlay').style.display = 'flex';
+        }
+        
+        function hideLoading() {
+            document.getElementById('loadingOverlay').style.display = 'none';
+        }
+        
+        function showToast(message, type = 'success') {
+            const toastContainer = document.querySelector('.toast-container');
+            const toastId = 'toast-' + Date.now();
+            
+            const toastHtml = `
+                <div id="${toastId}" class="toast align-items-center text-white bg-${type === 'error' ? 'danger' : 'success'} border-0" role="alert">
+                    <div class="d-flex">
+                        <div class="toast-body">
+                            <i class="fas ${type === 'error' ? 'fa-exclamation-circle' : 'fa-check-circle'} me-2"></i>
+                            ${message}
+                        </div>
+                        <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+                    </div>
+                </div>
+            `;
+            
+            toastContainer.insertAdjacentHTML('beforeend', toastHtml);
+            const toastElement = document.getElementById(toastId);
+            const toast = new bootstrap.Toast(toastElement, { delay: 3000 });
+            toast.show();
+            
+            toastElement.addEventListener('hidden.bs.toast', () => {
+                toastElement.remove();
+            });
+        }
     </script>
 </body>
 </html>
 """
-
-# Create the HTML file
-with open("templates/index.html", "w", encoding="utf-8") as f:
-    f.write(index_html)
-
-# Create static directory for additional assets
-os.makedirs("static/css", exist_ok=True)
-os.makedirs("static/js", exist_ok=True)
-
-# Create simple CSS file
-css_content = """
-/* Additional custom styles */
-.voice-preview {
-    border-left: 4px solid #4361ee;
-    padding-left: 1rem;
-    margin: 1rem 0;
-}
-
-.voice-preview audio {
-    width: 100%;
-    margin-top: 0.5rem;
-}
-
-.settings-group {
-    background: #f8f9fa;
-    border-radius: 8px;
-    padding: 1rem;
-    margin-bottom: 1rem;
-}
-
-.output-stats {
-    background: #e9ecef;
-    border-radius: 8px;
-    padding: 1rem;
-    margin-top: 1rem;
-    font-size: 0.875rem;
-}
-
-@media (max-width: 768px) {
-    .main-container {
-        margin: 1rem;
-        border-radius: 10px;
-    }
     
-    .nav-tabs .nav-link {
-        padding: 0.75rem 1rem;
-        font-size: 0.875rem;
-    }
+    template_path = "templates/index.html"
+    os.makedirs("templates", exist_ok=True)
     
-    .tab-content {
-        padding: 1rem;
-    }
-}
-"""
+    with open(template_path, "w", encoding="utf-8") as f:
+        f.write(template_content)
+    
+    print(f"Template created at: {template_path}")
 
-with open("static/css/custom.css", "w", encoding="utf-8") as f:
-    f.write(css_content)
-
-# ==================== START APPLICATION ====================
+# ==================== MAIN ENTRY POINT ====================
 if __name__ == "__main__":
     import uvicorn
     
+    # Cleanup on startup
+    tts_processor.cleanup_temp_files()
+    tts_processor.cleanup_old_outputs(24)
+    
     port = int(os.environ.get("PORT", 8000))
     
-    # Cleanup old temp files on startup
-    for file in os.listdir("temp"):
-        try:
-            os.remove(os.path.join("temp", file))
-        except:
-            pass
-    
-    print(f"Starting Professional TTS Generator on port {port}")
+    print("=" * 60)
+    print("PROFESSIONAL TTS GENERATOR v2.0")
+    print("=" * 60)
+    print(f"Server starting on port: {port}")
     print(f"Open http://localhost:{port} in your browser")
+    print("Features:")
+    print("  • Single voice TTS with advanced settings")
+    print("  • Multi-voice dialogue support")
+    print("  • Q&A dialogue generation")
+    print("  • Audio cache optimization")
+    print("  • Background task processing")
+    print("  • Progress tracking")
+    print("  • Auto cleanup of old files")
+    print("=" * 60)
     
     uvicorn.run(
         app,
         host="0.0.0.0",
         port=port,
-        log_level="info"
+        log_level="info",
+        workers=2,
+        timeout_keep_alive=30
     )
