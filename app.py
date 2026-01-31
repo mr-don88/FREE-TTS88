@@ -1,4 +1,4 @@
-# app.py
+# app.py - TTS Generator with Auto-Cache Clear
 import asyncio
 import json
 import os
@@ -24,8 +24,8 @@ import glob
 import shutil
 import threading
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 
-# ==================== SYSTEM CONFIGURATION ====================
 # ==================== SYSTEM CONFIGURATION ====================
 class TTSConfig:
     SETTINGS_FILE = "tts_settings.json"
@@ -515,7 +515,7 @@ class TTSConfig:
 class TaskManager:
     def __init__(self):
         self.tasks = {}
-        self.executor = ThreadPoolExecutor(max_workers=2)  # Giảm workers cho Render
+        self.executor = ThreadPoolExecutor(max_workers=2)
     
     def create_task(self, task_id: str, task_type: str):
         self.tasks[task_id] = {
@@ -1032,49 +1032,147 @@ class TextProcessor:
 class AudioCacheManager:
     def __init__(self):
         self.cache_dir = "audio_cache"
-        self.max_cache_size = 50  # Giảm cache size cho Render
+        self.max_cache_size = 50
+        self.cache_enabled = True
         os.makedirs(self.cache_dir, exist_ok=True)
     
     def get_cache_key(self, text: str, voice_id: str, rate: int, pitch: int, volume: int) -> str:
-        """Tạo cache key từ các tham số"""
-        import hashlib
-        key_string = f"{text}_{voice_id}_{rate}_{pitch}_{volume}"
-        return hashlib.md5(key_string.encode()).hexdigest()[:12]  # Giới hạn độ dài
+        """Tạo cache key từ các tham số - LUÔN UNIQUE"""
+        timestamp = int(time.time() / 60)  # Làm tròn theo phút
+        key_string = f"{timestamp}_{text}_{voice_id}_{rate}_{pitch}_{volume}"
+        return hashlib.md5(key_string.encode()).hexdigest()[:16]
     
     def get_cached_audio(self, cache_key: str) -> Optional[str]:
-        """Lấy file audio từ cache nếu tồn tại"""
+        """Lấy file audio từ cache nếu tồn tại - CACHE 1 PHÚT"""
+        if not self.cache_enabled:
+            return None
+            
         cache_file = os.path.join(self.cache_dir, f"{cache_key}.mp3")
         if os.path.exists(cache_file):
-            # Kiểm tra thời gian cache (không quá 1 ngày)
+            # Cache chỉ có hiệu lực trong 1 phút
             file_age = time.time() - os.path.getmtime(cache_file)
-            if file_age < 86400:  # 24 giờ
+            if file_age < 60:  # 1 phút
                 return cache_file
-        return None
-    
-    def save_to_cache(self, cache_key: str, audio_file: str):
-        """Lưu audio vào cache"""
-        try:
-            # Giới hạn số file trong cache
-            cache_files = os.listdir(self.cache_dir)
-            if len(cache_files) >= self.max_cache_size:
-                # Xóa file cũ nhất
-                oldest_file = min(
-                    [os.path.join(self.cache_dir, f) for f in cache_files],
-                    key=os.path.getmtime
-                )
+            else:
+                # Tự động xóa cache cũ
                 try:
-                    os.remove(oldest_file)
+                    os.remove(cache_file)
+                    # Xóa metadata nếu có
+                    meta_file = cache_file.replace('.mp3', '.meta')
+                    if os.path.exists(meta_file):
+                        os.remove(meta_file)
                 except:
                     pass
+        return None
+    
+    def save_to_cache(self, cache_key: str, audio_file: str, metadata: dict = None):
+        """Lưu audio vào cache"""
+        if not self.cache_enabled:
+            return None
+            
+        try:
+            # Giới hạn số file trong cache
+            self.cleanup_old_cache(keep_count=self.max_cache_size)
             
             cache_file = os.path.join(self.cache_dir, f"{cache_key}.mp3")
             shutil.copy(audio_file, cache_file)
+            
+            # Lưu metadata
+            if metadata:
+                meta_file = os.path.join(self.cache_dir, f"{cache_key}.meta")
+                with open(meta_file, 'w', encoding='utf-8') as f:
+                    json.dump(metadata, f, ensure_ascii=False)
+            
             return cache_file
         except Exception as e:
             print(f"Error saving to cache: {e}")
             return None
     
-    def clear_cache(self):
+    def clear_voice_cache(self, voice_id: str = None):
+        """
+        Xóa cache của giọng cụ thể hoặc toàn bộ cache
+        - Gọi tự động khi user ấn nút tạo giọng
+        """
+        try:
+            if not os.path.exists(self.cache_dir):
+                return True
+                
+            files_deleted = 0
+            for filename in os.listdir(self.cache_dir):
+                if filename.endswith('.mp3'):
+                    filepath = os.path.join(self.cache_dir, filename)
+                    
+                    if voice_id:
+                        # Kiểm tra metadata
+                        meta_file = filepath.replace('.mp3', '.meta')
+                        if os.path.exists(meta_file):
+                            try:
+                                with open(meta_file, 'r', encoding='utf-8') as f:
+                                    metadata = json.load(f)
+                                    if metadata.get('voice_id') == voice_id:
+                                        os.remove(filepath)
+                                        os.remove(meta_file)
+                                        files_deleted += 1
+                                        continue
+                            except:
+                                pass
+                        
+                        # Kiểm tra trong tên file
+                        if voice_id.replace('-', '_') in filename:
+                            os.remove(filepath)
+                            # Xóa metadata nếu có
+                            meta_file = filepath.replace('.mp3', '.meta')
+                            if os.path.exists(meta_file):
+                                os.remove(meta_file)
+                            files_deleted += 1
+                    else:
+                        # Xóa toàn bộ
+                        os.remove(filepath)
+                        # Xóa metadata nếu có
+                        meta_file = filepath.replace('.mp3', '.meta')
+                        if os.path.exists(meta_file):
+                            os.remove(meta_file)
+                        files_deleted += 1
+            
+            print(f"Cleared {files_deleted} cache files for voice: {voice_id or 'all'}")
+            return True
+        except Exception as e:
+            print(f"Error clearing voice cache: {e}")
+            return False
+    
+    def cleanup_old_cache(self, keep_count: int = 50):
+        """Tự động dọn dẹp cache cũ"""
+        try:
+            if not os.path.exists(self.cache_dir):
+                return
+            
+            cache_files = []
+            for f in os.listdir(self.cache_dir):
+                if f.endswith('.mp3'):
+                    filepath = os.path.join(self.cache_dir, f)
+                    cache_files.append((filepath, os.path.getmtime(filepath)))
+            
+            if len(cache_files) <= keep_count:
+                return
+            
+            # Sắp xếp theo thời gian (cũ nhất trước)
+            cache_files.sort(key=lambda x: x[1])
+            
+            # Xóa các file cũ
+            for i in range(len(cache_files) - keep_count):
+                if i >= 0:
+                    try:
+                        os.remove(cache_files[i][0])
+                        # Xóa metadata tương ứng
+                        meta_file = cache_files[i][0].replace('.mp3', '.meta')
+                        if os.path.exists(meta_file):
+                            os.remove(meta_file)
+                    except:
+                        pass
+        except Exception as e:
+            print(f"Error clearing oldest cache: {e}")
+    
+    def clear_all_cache(self):
         """Xóa toàn bộ cache"""
         try:
             if os.path.exists(self.cache_dir):
@@ -1082,7 +1180,7 @@ class AudioCacheManager:
             os.makedirs(self.cache_dir, exist_ok=True)
             return True
         except Exception as e:
-            print(f"Error clearing cache: {e}")
+            print(f"Error clearing all cache: {e}")
             return False
 
 # ==================== TTS PROCESSOR ====================
@@ -1157,20 +1255,27 @@ class TTSProcessor:
         with open(TTSConfig.SETTINGS_FILE, 'w', encoding='utf-8') as f:
             json.dump(self.settings, f, indent=2, ensure_ascii=False)
     
-    async def generate_speech(self, text: str, voice_id: str, rate: int = 0, pitch: int = 0, volume: int = 100, task_id: str = None):
-        """Generate speech using edge-tts with cache optimization"""
+    async def generate_speech(self, text: str, voice_id: str, rate: int = 0, pitch: int = 0, 
+                            volume: int = 100, clear_cache: bool = False, task_id: str = None):
+        """Generate speech using edge-tts với auto cache clear"""
         try:
-            # Kiểm tra cache trước
+            # XÓA CACHE của giọng này nếu clear_cache=True
+            if clear_cache:
+                self.cache_manager.clear_voice_cache(voice_id)
+                print(f"Auto-cleared cache for voice: {voice_id}")
+            
+            # Tạo cache key mới (luôn unique với timestamp)
             cache_key = self.cache_manager.get_cache_key(text, voice_id, rate, pitch, volume)
-            cached_file = self.cache_manager.get_cached_audio(cache_key)
             
-            if cached_file:
-                # Tạo file tạm từ cache
-                temp_file = f"temp/cache_{uuid.uuid4().hex[:8]}.mp3"
-                shutil.copy(cached_file, temp_file)
-                return temp_file, []
+            # Kiểm tra cache (chỉ khi không clear cache)
+            if not clear_cache:
+                cached_file = self.cache_manager.get_cached_audio(cache_key)
+                if cached_file:
+                    temp_file = f"temp/cache_{uuid.uuid4().hex[:8]}.mp3"
+                    shutil.copy(cached_file, temp_file)
+                    return temp_file, []
             
-            # Tạo unique ID để tránh cache
+            # Tạo unique ID
             unique_id = uuid.uuid4().hex[:8]
             
             # Format parameters
@@ -1224,8 +1329,17 @@ class TTSProcessor:
                 # Xuất với chất lượng cao
                 audio.export(temp_file, format="mp3", bitrate="256k")
                 
-                # Lưu vào cache
-                self.cache_manager.save_to_cache(cache_key, temp_file)
+                # Lưu vào cache với metadata
+                if not clear_cache:
+                    metadata = {
+                        "voice_id": voice_id,
+                        "rate": rate,
+                        "pitch": pitch,
+                        "volume": volume,
+                        "text_hash": hashlib.md5(text.encode()).hexdigest()[:8],
+                        "created_at": time.time()
+                    }
+                    self.cache_manager.save_to_cache(cache_key, temp_file, metadata)
                 
                 return temp_file, subtitles
             except Exception as e:
@@ -1259,10 +1373,14 @@ class TTSProcessor:
             return None
     
     async def process_single_voice(self, text: str, voice_id: str, rate: int, pitch: int, 
-                                 volume: int, pause: int, output_format: str = "mp3", task_id: str = None):
-        """Process text with single voice - Optimized version"""
+                                 volume: int, pause: int, output_format: str = "mp3", 
+                                 task_id: str = None, clear_cache: bool = False):
+        """Process text with single voice - với auto cache clear"""
         # Xóa cache và file cũ trước khi bắt đầu
         self.cleanup_temp_files()
+        
+        # Dọn dẹp cache cũ
+        self.cache_manager.cleanup_old_cache(keep_count=30)
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         output_dir = f"outputs/single_{timestamp}"
@@ -1272,13 +1390,13 @@ class TTSProcessor:
         sentences = self.text_processor.split_sentences(text)
         
         # Giới hạn số lượng câu để xử lý nhanh hơn
-        MAX_SENTENCES = 50  # Giảm cho Render
+        MAX_SENTENCES = 50
         if len(sentences) > MAX_SENTENCES:
             sentences = sentences[:MAX_SENTENCES]
             print(f"Processing {MAX_SENTENCES} sentences only for performance")
         
         # Tạo semaphore để giới hạn concurrent requests
-        SEMAPHORE = asyncio.Semaphore(2)  # Giảm concurrent requests
+        SEMAPHORE = asyncio.Semaphore(2)
         
         async def bounded_generate(sentence, index):
             async with SEMAPHORE:
@@ -1288,13 +1406,13 @@ class TTSProcessor:
                     task_manager.update_task(task_id, progress=progress, 
                                            message=f"Processing sentence {index+1}/{len(sentences)}")
                 
-                return await self.generate_speech(sentence, voice_id, rate, pitch, volume)
+                return await self.generate_speech(sentence, voice_id, rate, pitch, volume, clear_cache)
         
         # Xử lý các câu theo batch
         audio_segments = []
         all_subtitles = []
         
-        for i in range(0, len(sentences), 2):  # Batch size = 2 (giảm cho Render)
+        for i in range(0, len(sentences), 2):
             batch = sentences[i:i+2]
             batch_tasks = [bounded_generate(s, i+j) for j, s in enumerate(batch)]
             batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
@@ -1341,7 +1459,7 @@ class TTSProcessor:
         
         # Xuất file audio
         output_file = os.path.join(output_dir, f"single_voice.{output_format}")
-        combined.export(output_file, format=output_format, bitrate="192k")  # Giảm bitrate
+        combined.export(output_file, format=output_format, bitrate="192k")
         
         # Tạo file subtitle
         srt_file = self.generate_srt(all_subtitles, output_file)
@@ -1354,9 +1472,15 @@ class TTSProcessor:
         return output_file, srt_file
     
     async def process_multi_voice(self, text: str, voices_config: dict, pause: int, 
-                                repeat: int, output_format: str = "mp3", task_id: str = None):
+                                repeat: int, output_format: str = "mp3", task_id: str = None,
+                                clear_cache: bool = False):
         """Process text with multiple voices"""
         self.cleanup_temp_files()
+        
+        # Dọn dẹp cache cho cả 2 giọng
+        if clear_cache:
+            self.cache_manager.clear_voice_cache(voices_config["char1"]["voice"])
+            self.cache_manager.clear_voice_cache(voices_config["char2"]["voice"])
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         output_dir = f"outputs/multi_{timestamp}"
@@ -1414,7 +1538,8 @@ class TTSProcessor:
                 config["voice"], 
                 config["rate"], 
                 config["pitch"], 
-                config["volume"]
+                config["volume"],
+                clear_cache
             )
             
             if temp_file:
@@ -1433,7 +1558,7 @@ class TTSProcessor:
         # Kết hợp với repetition
         combined = AudioSegment.empty()
         
-        for rep in range(min(repeat, 2)):  # Giới hạn repeat
+        for rep in range(min(repeat, 2)):
             if task_id and task_manager:
                 task_manager.update_task(task_id, message=f"Combining repetition {rep+1}/{repeat}")
             
@@ -1475,9 +1600,15 @@ class TTSProcessor:
         return output_file, srt_file
     
     async def process_qa_dialogue(self, text: str, qa_config: dict, pause_q: int, 
-                                pause_a: int, repeat: int, output_format: str = "mp3", task_id: str = None):
+                                pause_a: int, repeat: int, output_format: str = "mp3", 
+                                task_id: str = None, clear_cache: bool = False):
         """Process Q&A dialogue"""
         self.cleanup_temp_files()
+        
+        # Dọn dẹp cache cho cả question và answer voices
+        if clear_cache:
+            self.cache_manager.clear_voice_cache(qa_config["question"]["voice"])
+            self.cache_manager.clear_voice_cache(qa_config["answer"]["voice"])
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         output_dir = f"outputs/qa_{timestamp}"
@@ -1535,7 +1666,8 @@ class TTSProcessor:
                 config["voice"],
                 config["rate"],
                 config["pitch"],
-                config["volume"]
+                config["volume"],
+                clear_cache
             )
             
             if temp_file:
@@ -1554,7 +1686,7 @@ class TTSProcessor:
         # Kết hợp với repetition
         combined = AudioSegment.empty()
         
-        for rep in range(min(repeat, 2)):  # Giới hạn repeat
+        for rep in range(min(repeat, 2)):
             if task_id and task_manager:
                 task_manager.update_task(task_id, message=f"Combining repetition {rep+1}/{repeat}")
             
@@ -1603,7 +1735,7 @@ class TTSProcessor:
                 try:
                     if os.path.exists(file):
                         file_age = time.time() - os.path.getmtime(file)
-                        if file_age > 3600:  # Xóa file cũ hơn 1 giờ
+                        if file_age > 3600:
                             os.remove(file)
                 except:
                     pass
@@ -1630,7 +1762,7 @@ class TTSProcessor:
 # ==================== LIFESPAN MANAGER ====================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Lifespan event handler thay thế cho on_event"""
+    """Lifespan event handler"""
     # Startup
     print("Starting up TTS Generator...")
     
@@ -1659,10 +1791,10 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Professional TTS Generator", 
     version="2.0.0",
-    lifespan=lifespan  # Sử dụng lifespan thay vì on_event
+    lifespan=lifespan
 )
 
-# Global instances (sẽ được khởi tạo trong lifespan)
+# Global instances
 tts_processor = None
 task_manager = None
 
@@ -1708,9 +1840,10 @@ async def generate_single_voice(
     pitch: int = Form(0),
     volume: int = Form(100),
     pause: int = Form(500),
-    output_format: str = Form("mp3")
+    output_format: str = Form("mp3"),
+    clear_cache: bool = Form(False)  # THÊM: Auto clear cache
 ):
-    """Generate single voice TTS with task system"""
+    """Generate single voice TTS với auto cache clear"""
     try:
         if not text.strip():
             raise HTTPException(status_code=400, detail="Text is required")
@@ -1736,7 +1869,8 @@ async def generate_single_voice(
         async def background_task():
             try:
                 audio_file, srt_file = await tts_processor.process_single_voice(
-                    text, voice_id, rate, pitch, volume, pause, output_format, task_id
+                    text, voice_id, rate, pitch, volume, pause, 
+                    output_format, task_id, clear_cache  # TRUYỀN clear_cache
                 )
                 
                 if audio_file:
@@ -1744,7 +1878,7 @@ async def generate_single_voice(
                         "success": True,
                         "audio_url": f"/download/{os.path.basename(audio_file)}",
                         "srt_url": f"/download/{os.path.basename(srt_file)}" if srt_file else None,
-                        "message": "Audio generated successfully"
+                        "message": "Audio generated successfully" + (" (fresh)" if clear_cache else "")
                     }
                 else:
                     result = {
@@ -1764,7 +1898,7 @@ async def generate_single_voice(
         return {
             "success": True,
             "task_id": task_id,
-            "message": "Audio generation started. Check task status."
+            "message": f"Audio generation started. {'Cache cleared for fresh audio.' if clear_cache else ''}"
         }
         
     except Exception as e:
@@ -1785,9 +1919,10 @@ async def generate_multi_voice(
     char2_volume: int = Form(100),
     pause: int = Form(500),
     repeat: int = Form(1),
-    output_format: str = Form("mp3")
+    output_format: str = Form("mp3"),
+    clear_cache: bool = Form(False)  # THÊM: Auto clear cache
 ):
-    """Generate multi-voice TTS"""
+    """Generate multi-voice TTS với auto cache clear"""
     try:
         if not text.strip():
             raise HTTPException(status_code=400, detail="Text is required")
@@ -1826,7 +1961,8 @@ async def generate_multi_voice(
         async def background_task():
             try:
                 audio_file, srt_file = await tts_processor.process_multi_voice(
-                    text, voices_config, pause, repeat, output_format, task_id
+                    text, voices_config, pause, repeat, output_format, 
+                    task_id, clear_cache  # TRUYỀN clear_cache
                 )
                 
                 if audio_file:
@@ -1834,7 +1970,7 @@ async def generate_multi_voice(
                         "success": True,
                         "audio_url": f"/download/{os.path.basename(audio_file)}",
                         "srt_url": f"/download/{os.path.basename(srt_file)}" if srt_file else None,
-                        "message": "Multi-voice audio generated successfully"
+                        "message": "Multi-voice audio generated successfully" + (" (fresh)" if clear_cache else "")
                     }
                 else:
                     result = {
@@ -1853,7 +1989,7 @@ async def generate_multi_voice(
         return {
             "success": True,
             "task_id": task_id,
-            "message": "Multi-voice audio generation started"
+            "message": f"Multi-voice audio generation started. {'Cache cleared for fresh audio.' if clear_cache else ''}"
         }
         
     except Exception as e:
@@ -1875,9 +2011,10 @@ async def generate_qa_dialogue(
     pause_q: int = Form(200),
     pause_a: int = Form(500),
     repeat: int = Form(2),
-    output_format: str = Form("mp3")
+    output_format: str = Form("mp3"),
+    clear_cache: bool = Form(False)  # THÊM: Auto clear cache
 ):
-    """Generate Q&A dialogue TTS"""
+    """Generate Q&A dialogue TTS với auto cache clear"""
     try:
         if not text.strip():
             raise HTTPException(status_code=400, detail="Text is required")
@@ -1917,7 +2054,8 @@ async def generate_qa_dialogue(
         async def background_task():
             try:
                 audio_file, srt_file = await tts_processor.process_qa_dialogue(
-                    text, qa_config, pause_q, pause_a, repeat, output_format, task_id
+                    text, qa_config, pause_q, pause_a, repeat, output_format, 
+                    task_id, clear_cache  # TRUYỀN clear_cache
                 )
                 
                 if audio_file:
@@ -1925,7 +2063,7 @@ async def generate_qa_dialogue(
                         "success": True,
                         "audio_url": f"/download/{os.path.basename(audio_file)}",
                         "srt_url": f"/download/{os.path.basename(srt_file)}" if srt_file else None,
-                        "message": "Q&A dialogue audio generated successfully"
+                        "message": "Q&A dialogue audio generated successfully" + (" (fresh)" if clear_cache else "")
                     }
                 else:
                     result = {
@@ -1944,7 +2082,7 @@ async def generate_qa_dialogue(
         return {
             "success": True,
             "task_id": task_id,
-            "message": "Q&A audio generation started"
+            "message": f"Q&A audio generation started. {'Cache cleared for fresh audio.' if clear_cache else ''}"
         }
         
     except Exception as e:
@@ -2001,10 +2139,7 @@ async def cleanup_files():
         
         # Cleanup files
         tts_processor.cleanup_temp_files()
-        tts_processor.cleanup_old_outputs(1)  # 1 hour
-        
-        # Clear audio cache
-        tts_processor.cache_manager.clear_cache()
+        tts_processor.cleanup_old_outputs(1)
         
         return {"success": True, "message": "Cleanup completed"}
     except Exception as e:
@@ -2019,13 +2154,13 @@ async def cleanup_all():
             shutil.rmtree("temp")
             os.makedirs("temp")
         
-        # Xóa toàn bộ outputs (giữ lại cấu trúc)
+        # Xóa toàn bộ outputs
         if os.path.exists("outputs"):
             shutil.rmtree("outputs")
             os.makedirs("outputs")
         
         # Xóa toàn bộ cache
-        tts_processor.cache_manager.clear_cache()
+        tts_processor.cache_manager.clear_all_cache()
         
         # Xóa task cache
         task_manager.tasks.clear()
@@ -2044,9 +2179,8 @@ async def health_check():
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
 # ==================== HTML TEMPLATE CREATION ====================
-# Trong hàm create_template_file(), thay đổi phần Multi-Voice tab:
 def create_template_file():
-    """Create HTML template file"""
+    """Create HTML template file với checkbox Generate Fresh Audio"""
     template_content = """
 <!DOCTYPE html>
 <html lang="vi">
@@ -2193,6 +2327,14 @@ def create_template_file():
         .q-tag { background: #e8f5e9; color: #388e3c; }
         .a-tag { background: #fff3e0; color: #f57c00; }
         
+        .fresh-audio-check {
+            background: #e8f5e9;
+            border: 1px solid #388e3c;
+            border-radius: 10px;
+            padding: 1rem;
+            margin: 1rem 0;
+        }
+        
         @media (max-width: 768px) {
             .nav-tabs .nav-link {
                 padding: 0.75rem 1rem;
@@ -2218,9 +2360,6 @@ def create_template_file():
                 <i class="fas fa-microphone-alt me-2"></i>
                 Professional TTS Generator v2.0
             </a>
-            <button class="btn btn-light" onclick="cleanupAll()">
-                <i class="fas fa-broom me-2"></i>Clean Cache
-            </button>
         </div>
     </nav>
 
@@ -2329,6 +2468,19 @@ def create_template_file():
                                         </div>
                                     </div>
                                 </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Generate Fresh Audio Option -->
+                        <div class="fresh-audio-check mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="clearCacheSingle">
+                                <label class="form-check-label" for="clearCacheSingle">
+                                    <i class="fas fa-sync-alt me-2"></i> Generate Fresh Audio
+                                </label>
+                                <small class="form-text text-muted d-block mt-1">
+                                    Check this to clear cache and generate new audio. Automatically clears old cache when you create new voice.
+                                </small>
                             </div>
                         </div>
                         
@@ -2478,6 +2630,19 @@ def create_template_file():
                                 <option value="{{ format }}">{{ format|upper }}</option>
                                 {% endfor %}
                             </select>
+                        </div>
+                        
+                        <!-- Generate Fresh Audio Option -->
+                        <div class="fresh-audio-check mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="clearCacheMulti">
+                                <label class="form-check-label" for="clearCacheMulti">
+                                    <i class="fas fa-sync-alt me-2"></i> Generate Fresh Audio
+                                </label>
+                                <small class="form-text text-muted d-block mt-1">
+                                    Clear cache for both voices and generate new audio.
+                                </small>
+                            </div>
                         </div>
                         
                         <button class="btn btn-primary w-100" onclick="generateMulti()">
@@ -2633,6 +2798,19 @@ def create_template_file():
                                 <option value="{{ format }}">{{ format|upper }}</option>
                                 {% endfor %}
                             </select>
+                        </div>
+                        
+                        <!-- Generate Fresh Audio Option -->
+                        <div class="fresh-audio-check mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="clearCacheQA">
+                                <label class="form-check-label" for="clearCacheQA">
+                                    <i class="fas fa-sync-alt me-2"></i> Generate Fresh Audio
+                                </label>
+                                <small class="form-text text-muted d-block mt-1">
+                                    Clear cache for both question and answer voices.
+                                </small>
+                            </div>
                         </div>
                         
                         <button class="btn btn-primary w-100" onclick="generateQA()">
@@ -3057,6 +3235,7 @@ def create_template_file():
             const text = document.getElementById('singleText').value.trim();
             const voice = document.getElementById('singleVoice').value;
             const language = document.getElementById('singleLanguage').value;
+            const clearCache = document.getElementById('clearCacheSingle').checked;
             
             if (!text) {
                 showToast('Please enter text', 'error');
@@ -3083,6 +3262,7 @@ def create_template_file():
             formData.append('volume', document.getElementById('singleVolume').value);
             formData.append('pause', document.getElementById('singlePause').value);
             formData.append('output_format', document.getElementById('singleFormat').value);
+            formData.append('clear_cache', clearCache);
             
             try {
                 const response = await fetch('/api/generate/single', {
@@ -3095,7 +3275,7 @@ def create_template_file():
                 if (result.success) {
                     currentTaskId = result.task_id;
                     showTaskStatus('single', result.task_id);
-                    showToast('Audio generation started');
+                    showToast('Audio generation started' + (clearCache ? ' (fresh audio)' : ''));
                 } else {
                     showToast(result.message || 'Generation failed', 'error');
                 }
@@ -3110,6 +3290,7 @@ def create_template_file():
         // Generate multi-voice audio
         async function generateMulti() {
             const text = document.getElementById('multiText').value.trim();
+            const clearCache = document.getElementById('clearCacheMulti').checked;
             
             if (!text) {
                 showToast('Please enter dialogue text', 'error');
@@ -3161,6 +3342,7 @@ def create_template_file():
             formData.append('pause', document.getElementById('multiPause').value);
             formData.append('repeat', document.getElementById('multiRepeat').value);
             formData.append('output_format', document.getElementById('multiFormat').value);
+            formData.append('clear_cache', clearCache);
             
             try {
                 const response = await fetch('/api/generate/multi', {
@@ -3173,7 +3355,7 @@ def create_template_file():
                 if (result.success) {
                     currentTaskId = result.task_id;
                     showTaskStatus('multi', result.task_id);
-                    showToast('Multi-voice audio generation started');
+                    showToast('Multi-voice audio generation started' + (clearCache ? ' (fresh audio)' : ''));
                 } else {
                     showToast(result.message || 'Generation failed', 'error');
                 }
@@ -3188,6 +3370,7 @@ def create_template_file():
         // Generate Q&A audio
         async function generateQA() {
             const text = document.getElementById('qaText').value.trim();
+            const clearCache = document.getElementById('clearCacheQA').checked;
             
             if (!text) {
                 showToast('Please enter Q&A text', 'error');
@@ -3240,6 +3423,7 @@ def create_template_file():
             formData.append('pause_a', document.getElementById('qaPauseA').value);
             formData.append('repeat', document.getElementById('qaRepeat').value);
             formData.append('output_format', document.getElementById('qaFormat').value);
+            formData.append('clear_cache', clearCache);
             
             try {
                 const response = await fetch('/api/generate/qa', {
@@ -3252,7 +3436,7 @@ def create_template_file():
                 if (result.success) {
                     currentTaskId = result.task_id;
                     showTaskStatus('qa', result.task_id);
-                    showToast('Q&A audio generation started');
+                    showToast('Q&A audio generation started' + (clearCache ? ' (fresh audio)' : ''));
                 } else {
                     showToast(result.message || 'Generation failed', 'error');
                 }
@@ -3317,7 +3501,7 @@ def create_template_file():
                 } catch (error) {
                     console.error('Error checking task status:', error);
                 }
-            }, 2000); // Poll every 2 seconds
+            }, 2000);
         }
         
         // Show output based on type
@@ -3361,28 +3545,6 @@ def create_template_file():
                 await fetch('/api/cleanup', { method: 'POST' });
             } catch (error) {
                 console.error('Error cleaning up:', error);
-            }
-        }
-        
-        // Cleanup all cache
-        async function cleanupAll() {
-            if (confirm('Are you sure you want to clear all cache and temporary files?')) {
-                showLoading();
-                try {
-                    const response = await fetch('/api/cleanup/all', { method: 'POST' });
-                    const result = await response.json();
-                    
-                    if (result.success) {
-                        showToast('All cache cleared successfully');
-                    } else {
-                        showToast(result.message, 'error');
-                    }
-                } catch (error) {
-                    console.error('Error cleaning up:', error);
-                    showToast('Error clearing cache', 'error');
-                } finally {
-                    hideLoading();
-                }
             }
         }
         
@@ -3491,7 +3653,7 @@ def create_gunicorn_conf():
 import multiprocessing
 
 bind = "0.0.0.0:10000"
-workers = 1  # Render sets WEB_CONCURRENCY
+workers = 1
 worker_class = "uvicorn.workers.UvicornWorker"
 timeout = 120
 keepalive = 5
@@ -3517,7 +3679,11 @@ if __name__ == "__main__":
     print("=" * 60)
     print(f"Server starting on port: {port}")
     print(f"Open http://localhost:{port} in your browser")
-    print("Optimized for Render deployment")
+    print("Features:")
+    print("- Auto cache clear when generating new voices")
+    print("- Cache timeout: 1 minute")
+    print("- Fresh audio generation option")
+    print("- Multi-user ready")
     print("=" * 60)
     
     # Run with uvicorn
@@ -3526,5 +3692,5 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=port,
         log_level="info",
-        reload=False  # Disable reload for production
+        reload=False
     )
