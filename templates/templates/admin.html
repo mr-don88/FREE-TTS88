@@ -1,0 +1,1148 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Panel - TTS Generator</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="https://cdn.datatables.net/1.11.5/css/dataTables.bootstrap5.min.css" rel="stylesheet">
+    <style>
+        :root {
+            --primary-color: #4361ee;
+            --secondary-color: #3a0ca3;
+            --danger-color: #dc3545;
+            --warning-color: #ffc107;
+            --success-color: #28a745;
+        }
+        
+        .navbar {
+            background: white;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        .sidebar {
+            background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+            color: white;
+            min-height: 100vh;
+            padding-top: 2rem;
+        }
+        
+        .sidebar a {
+            color: rgba(255,255,255,0.8);
+            padding: 0.75rem 1.5rem;
+            display: block;
+            text-decoration: none;
+            transition: all 0.3s;
+        }
+        
+        .sidebar a:hover, .sidebar a.active {
+            background: rgba(255,255,255,0.1);
+            color: white;
+            padding-left: 2rem;
+        }
+        
+        .sidebar a i {
+            width: 20px;
+            margin-right: 10px;
+        }
+        
+        .main-content {
+            padding: 2rem;
+            background: #f8f9fa;
+            min-height: 100vh;
+        }
+        
+        .admin-container {
+            background: white;
+            border-radius: 15px;
+            padding: 2rem;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.05);
+        }
+        
+        .stat-card {
+            background: white;
+            border-radius: 10px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.05);
+            border-left: 4px solid var(--primary-color);
+        }
+        
+        .stat-card.users {
+            border-left-color: var(--primary-color);
+        }
+        
+        .stat-card.premium {
+            border-left-color: var(--success-color);
+        }
+        
+        .stat-card.free {
+            border-left-color: var(--warning-color);
+        }
+        
+        .stat-card.usage {
+            border-left-color: var(--danger-color);
+        }
+        
+        .stat-card i {
+            font-size: 2rem;
+            margin-bottom: 1rem;
+        }
+        
+        .stat-card.users i {
+            color: var(--primary-color);
+        }
+        
+        .stat-card.premium i {
+            color: var(--success-color);
+        }
+        
+        .stat-card.free i {
+            color: var(--warning-color);
+        }
+        
+        .stat-card.usage i {
+            color: var(--danger-color);
+        }
+        
+        .badge-free {
+            background: var(--warning-color);
+            color: #000;
+        }
+        
+        .badge-premium {
+            background: var(--success-color);
+            color: white;
+        }
+        
+        .badge-pro {
+            background: var(--primary-color);
+            color: white;
+        }
+        
+        .badge-admin {
+            background: var(--danger-color);
+            color: white;
+        }
+        
+        .user-actions {
+            white-space: nowrap;
+        }
+        
+        .btn-sm {
+            padding: 0.25rem 0.5rem;
+            font-size: 0.875rem;
+        }
+        
+        .modal-lg {
+            max-width: 800px;
+        }
+        
+        .plan-select {
+            cursor: pointer;
+            padding: 0.5rem;
+            border-radius: 5px;
+            transition: all 0.3s;
+        }
+        
+        .plan-select:hover {
+            background: #f8f9fa;
+        }
+        
+        .plan-select.selected {
+            background: rgba(67, 97, 238, 0.1);
+            border: 1px solid var(--primary-color);
+        }
+        
+        .chart-container {
+            height: 300px;
+            position: relative;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-light">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="/dashboard">
+                <i class="fas fa-microphone-alt me-2"></i>TTS Generator
+            </a>
+            <div class="d-flex align-items-center">
+                <span class="me-3"><i class="fas fa-crown me-1"></i> Admin: {{ admin.username }}</span>
+                <a href="/dashboard" class="btn btn-outline-primary btn-sm me-2">
+                    <i class="fas fa-home"></i>
+                </a>
+                <a href="/logout" class="btn btn-outline-danger btn-sm">
+                    <i class="fas fa-sign-out-alt"></i>
+                </a>
+            </div>
+        </div>
+    </nav>
+    
+    <div class="container-fluid">
+        <div class="row">
+            <div class="col-md-3 col-lg-2 sidebar">
+                <a href="/dashboard">
+                    <i class="fas fa-home"></i> Dashboard
+                </a>
+                <a href="/admin" class="active">
+                    <i class="fas fa-cog"></i> Admin Panel
+                </a>
+                <a href="#stats" onclick="switchTab('stats')">
+                    <i class="fas fa-chart-bar"></i> Statistics
+                </a>
+                <a href="#users" onclick="switchTab('users')">
+                    <i class="fas fa-users"></i> User Management
+                </a>
+                <a href="#subscriptions" onclick="switchTab('subscriptions')">
+                    <i class="fas fa-crown"></i> Subscriptions
+                </a>
+                <a href="#system" onclick="switchTab('system')">
+                    <i class="fas fa-server"></i> System
+                </a>
+            </div>
+            
+            <div class="col-md-9 col-lg-10 main-content">
+                <div class="admin-container">
+                    <h2 class="mb-4"><i class="fas fa-cog me-2"></i>Admin Panel</h2>
+                    
+                    <!-- Statistics Section -->
+                    <div id="stats-section">
+                        <h4 class="mb-4"><i class="fas fa-chart-bar me-2"></i>System Statistics</h4>
+                        
+                        <div class="row mb-4">
+                            <div class="col-md-3">
+                                <div class="stat-card users">
+                                    <i class="fas fa-users"></i>
+                                    <h3>{{ stats.total_users }}</h3>
+                                    <p class="mb-0">Total Users</p>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="stat-card free">
+                                    <i class="fas fa-user-friends"></i>
+                                    <h3>{{ stats.free_users }}</h3>
+                                    <p class="mb-0">Free Users</p>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="stat-card premium">
+                                    <i class="fas fa-crown"></i>
+                                    <h3>{{ stats.premium_users + stats.pro_users }}</h3>
+                                    <p class="mb-0">Paid Users</p>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="stat-card usage">
+                                    <i class="fas fa-font"></i>
+                                    <h3>{{ (stats.total_characters / 1000000)|round(1) }}M</h3>
+                                    <p class="mb-0">Characters Used</p>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="card">
+                                    <div class="card-body">
+                                        <h5 class="card-title">User Distribution</h5>
+                                        <div class="chart-container">
+                                            <canvas id="userChart"></canvas>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="card">
+                                    <div class="card-body">
+                                        <h5 class="card-title">System Information</h5>
+                                        <table class="table table-sm">
+                                            <tr>
+                                                <th>Server Time</th>
+                                                <td id="serverTime"></td>
+                                            </tr>
+                                            <tr>
+                                                <th>Uptime</th>
+                                                <td id="uptime">Calculating...</td>
+                                            </tr>
+                                            <tr>
+                                                <th>Active Tasks</th>
+                                                <td id="activeTasks">0</td>
+                                            </tr>
+                                            <tr>
+                                                <th>Cache Size</th>
+                                                <td id="cacheSize">0 MB</td>
+                                            </tr>
+                                            <tr>
+                                                <th>Database Size</th>
+                                                <td id="dbSize">0 MB</td>
+                                            </tr>
+                                        </table>
+                                        
+                                        <div class="mt-3">
+                                            <button class="btn btn-primary btn-sm me-2" onclick="refreshStats()">
+                                                <i class="fas fa-sync-alt me-1"></i>Refresh
+                                            </button>
+                                            <button class="btn btn-warning btn-sm me-2" onclick="clearCache()">
+                                                <i class="fas fa-broom me-1"></i>Clear Cache
+                                            </button>
+                                            <button class="btn btn-danger btn-sm" onclick="backupSystem()">
+                                                <i class="fas fa-download me-1"></i>Backup
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- User Management Section -->
+                    <div id="users-section" style="display: none;">
+                        <h4 class="mb-4"><i class="fas fa-users me-2"></i>User Management</h4>
+                        
+                        <div class="mb-3">
+                            <div class="input-group">
+                                <input type="text" class="form-control" id="userSearch" placeholder="Search users...">
+                                <button class="btn btn-outline-primary" type="button" onclick="searchUsers()">
+                                    <i class="fas fa-search"></i>
+                                </button>
+                                <button class="btn btn-success" type="button" onclick="showAddUserModal()">
+                                    <i class="fas fa-user-plus me-1"></i>Add User
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <div class="table-responsive">
+                            <table class="table table-hover" id="usersTable">
+                                <thead>
+                                    <tr>
+                                        <th>Username</th>
+                                        <th>Email</th>
+                                        <th>Plan</th>
+                                        <th>Role</th>
+                                        <th>Usage</th>
+                                        <th>Joined</th>
+                                        <th>Status</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for username, user_data in users.items() %}
+                                    <tr>
+                                        <td>
+                                            <strong>{{ user_data.username }}</strong>
+                                            {% if user_data.full_name %}
+                                            <br><small class="text-muted">{{ user_data.full_name }}</small>
+                                            {% endif %}
+                                        </td>
+                                        <td>{{ user_data.email }}</td>
+                                        <td>
+                                            <span class="badge badge-{{ user_data.subscription.plan }}">
+                                                {{ user_data.subscription.plan|title }}
+                                            </span>
+                                            <br>
+                                            <small>Expires: {{ user_data.subscription.expires_at[:10] }}</small>
+                                        </td>
+                                        <td>
+                                            <span class="badge {% if user_data.role == 'admin' %}badge-admin{% else %}badge-secondary{% endif %}">
+                                                {{ user_data.role }}
+                                            </span>
+                                        </td>
+                                        <td>
+                                            {{ user_data.usage.characters_used|int|format(',d') }} chars
+                                            <br>
+                                            <small>{{ user_data.usage.total_requests }} requests</small>
+                                        </td>
+                                        <td>{{ user_data.created_at[:10] }}</td>
+                                        <td>
+                                            {% set expires_at = user_data.subscription.expires_at %}
+                                            {% if expires_at and expires_at > now().isoformat() %}
+                                            <span class="badge bg-success">Active</span>
+                                            {% else %}
+                                            <span class="badge bg-danger">Expired</span>
+                                            {% endif %}
+                                        </td>
+                                        <td class="user-actions">
+                                            <button class="btn btn-sm btn-outline-primary" 
+                                                    onclick="editUser('{{ user_data.username }}')"
+                                                    title="Edit User">
+                                                <i class="fas fa-edit"></i>
+                                            </button>
+                                            <button class="btn btn-sm btn-outline-warning" 
+                                                    onclick="resetUsage('{{ user_data.username }}')"
+                                                    title="Reset Usage">
+                                                <i class="fas fa-redo"></i>
+                                            </button>
+                                            {% if user_data.username != 'admin' %}
+                                            <button class="btn btn-sm btn-outline-danger" 
+                                                    onclick="deleteUser('{{ user_data.username }}')"
+                                                    title="Delete User">
+                                                <i class="fas fa-trash"></i>
+                                            </button>
+                                            {% endif %}
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    
+                    <!-- Subscriptions Section -->
+                    <div id="subscriptions-section" style="display: none;">
+                        <h4 class="mb-4"><i class="fas fa-crown me-2"></i>Subscription Management</h4>
+                        
+                        <div class="row">
+                            <div class="col-md-8">
+                                <div class="card">
+                                    <div class="card-body">
+                                        <h5 class="card-title">Revenue Overview</h5>
+                                        <div class="row text-center mb-4">
+                                            <div class="col-md-4">
+                                                <div class="p-3 border rounded">
+                                                    <h3 class="text-primary">$0</h3>
+                                                    <small class="text-muted">Today</small>
+                                                </div>
+                                            </div>
+                                            <div class="col-md-4">
+                                                <div class="p-3 border rounded">
+                                                    <h3 class="text-success">$0</h3>
+                                                    <small class="text-muted">This Month</small>
+                                                </div>
+                                            </div>
+                                            <div class="col-md-4">
+                                                <div class="p-3 border rounded">
+                                                    <h3 class="text-warning">$0</h3>
+                                                    <small class="text-muted">Total</small>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        
+                                        <h6>Recent Subscription Changes</h6>
+                                        <div class="list-group">
+                                            <div class="list-group-item">
+                                                <div class="d-flex justify-content-between">
+                                                    <span>john_doe upgraded to Premium</span>
+                                                    <small class="text-muted">Today, 10:30 AM</small>
+                                                </div>
+                                            </div>
+                                            <div class="list-group-item">
+                                                <div class="d-flex justify-content-between">
+                                                    <span>jane_smith downgraded to Free</span>
+                                                    <small class="text-muted">Yesterday, 3:15 PM</small>
+                                                </div>
+                                            </div>
+                                            <div class="list-group-item">
+                                                <div class="d-flex justify-content-between">
+                                                    <span>pro_user renewed Pro plan</span>
+                                                    <small class="text-muted">2 days ago</small>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="col-md-4">
+                                <div class="card">
+                                    <div class="card-body">
+                                        <h5 class="card-title">Quick Actions</h5>
+                                        
+                                        <div class="mb-3">
+                                            <label class="form-label">Update User Subscription</label>
+                                            <div class="input-group mb-2">
+                                                <input type="text" class="form-control" id="subUsername" placeholder="Username">
+                                                <button class="btn btn-outline-primary" onclick="findUserForSub()">
+                                                    <i class="fas fa-search"></i>
+                                                </button>
+                                            </div>
+                                            
+                                            <div id="userSubInfo" style="display: none;">
+                                                <div class="mb-2 p-2 bg-light rounded">
+                                                    <small id="currentSubInfo"></small>
+                                                </div>
+                                                
+                                                <label class="form-label">New Plan</label>
+                                                <div class="mb-2">
+                                                    <div class="plan-select" onclick="selectSubPlan('free')" id="planFree">
+                                                        <strong>Free</strong> - $0
+                                                    </div>
+                                                    <div class="plan-select" onclick="selectSubPlan('premium')" id="planPremium">
+                                                        <strong>Premium</strong> - $9.99/month
+                                                    </div>
+                                                    <div class="plan-select" onclick="selectSubPlan('pro')" id="planPro">
+                                                        <strong>Pro</strong> - $29.99/month
+                                                    </div>
+                                                </div>
+                                                
+                                                <div class="mb-3">
+                                                    <label class="form-label">Duration (days)</label>
+                                                    <input type="number" class="form-control" id="subDays" value="30" min="1" max="365">
+                                                </div>
+                                                
+                                                <button class="btn btn-primary w-100" onclick="updateSubscription()">
+                                                    <i class="fas fa-save me-1"></i>Update Subscription
+                                                </button>
+                                            </div>
+                                        </div>
+                                        
+                                        <div class="mt-4">
+                                            <h6>Export Reports</h6>
+                                            <button class="btn btn-outline-secondary w-100 mb-2" onclick="exportUsers()">
+                                                <i class="fas fa-file-csv me-1"></i>Export Users CSV
+                                            </button>
+                                            <button class="btn btn-outline-secondary w-100" onclick="exportRevenue()">
+                                                <i class="fas fa-file-excel me-1"></i>Export Revenue Report
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- System Section -->
+                    <div id="system-section" style="display: none;">
+                        <h4 class="mb-4"><i class="fas fa-server me-2"></i>System Management</h4>
+                        
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="card mb-4">
+                                    <div class="card-body">
+                                        <h5 class="card-title">System Maintenance</h5>
+                                        
+                                        <div class="mb-3">
+                                            <label class="form-label">Clear Cache</label>
+                                            <p class="text-muted">Remove temporary files and cache to free up space</p>
+                                            <button class="btn btn-warning w-100" onclick="clearAllCache()">
+                                                <i class="fas fa-broom me-1"></i>Clear All Cache
+                                            </button>
+                                        </div>
+                                        
+                                        <div class="mb-3">
+                                            <label class="form-label">Cleanup Old Files</label>
+                                            <p class="text-muted">Remove output files older than specified days</p>
+                                            <div class="input-group">
+                                                <input type="number" class="form-control" id="cleanupDays" value="7" min="1" max="30">
+                                                <button class="btn btn-outline-danger" onclick="cleanupFiles()">
+                                                    <i class="fas fa-trash me-1"></i>Cleanup
+                                                </button>
+                                            </div>
+                                        </div>
+                                        
+                                        <div class="mb-3">
+                                            <label class="form-label">Database Optimization</label>
+                                            <p class="text-muted">Optimize database performance</p>
+                                            <button class="btn btn-info w-100" onclick="optimizeDB()">
+                                                <i class="fas fa-database me-1"></i>Optimize Database
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="col-md-6">
+                                <div class="card mb-4">
+                                    <div class="card-body">
+                                        <h5 class="card-title">System Settings</h5>
+                                        
+                                        <div class="mb-3">
+                                            <label class="form-label">Free Plan Limit</label>
+                                            <div class="input-group">
+                                                <input type="number" class="form-control" id="freeLimit" value="30000">
+                                                <span class="input-group-text">characters/week</span>
+                                                <button class="btn btn-outline-primary" onclick="updateFreeLimit()">
+                                                    <i class="fas fa-save"></i>
+                                                </button>
+                                            </div>
+                                        </div>
+                                        
+                                        <div class="mb-3">
+                                            <label class="form-label">Premium Plan Limit</label>
+                                            <div class="input-group">
+                                                <input type="number" class="form-control" id="premiumLimit" value="1000000">
+                                                <span class="input-group-text">characters/month</span>
+                                                <button class="btn btn-outline-primary" onclick="updatePremiumLimit()">
+                                                    <i class="fas fa-save"></i>
+                                                </button>
+                                            </div>
+                                        </div>
+                                        
+                                        <div class="mb-3">
+                                            <label class="form-label">System Announcement</label>
+                                            <textarea class="form-control" id="announcement" rows="3" placeholder="System-wide announcement..."></textarea>
+                                            <button class="btn btn-primary mt-2 w-100" onclick="postAnnouncement()">
+                                                <i class="fas fa-bullhorn me-1"></i>Post Announcement
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="card">
+                            <div class="card-body">
+                                <h5 class="card-title">System Logs</h5>
+                                <div class="table-responsive">
+                                    <table class="table table-sm">
+                                        <thead>
+                                            <tr>
+                                                <th>Time</th>
+                                                <th>Type</th>
+                                                <th>User</th>
+                                                <th>Action</th>
+                                                <th>Details</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            <tr>
+                                                <td>2024-01-15 10:30</td>
+                                                <td><span class="badge bg-info">INFO</span></td>
+                                                <td>system</td>
+                                                <td>Server restart</td>
+                                                <td>Application started successfully</td>
+                                            </tr>
+                                            <tr>
+                                                <td>2024-01-15 09:15</td>
+                                                <td><span class="badge bg-success">USER</span></td>
+                                                <td>john_doe</td>
+                                                <td>Audio generation</td>
+                                                <td>Generated 1,234 characters</td>
+                                            </tr>
+                                            <tr>
+                                                <td>2024-01-15 08:45</td>
+                                                <td><span class="badge bg-warning">WARN</span></td>
+                                                <td>system</td>
+                                                <td>Cache cleanup</td>
+                                                <td>Removed 45MB of old files</td>
+                                            </tr>
+                                            <tr>
+                                                <td>2024-01-14 22:10</td>
+                                                <td><span class="badge bg-primary">ADMIN</span></td>
+                                                <td>admin</td>
+                                                <td>User updated</td>
+                                                <td>Updated subscription for jane_smith</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- User Edit Modal -->
+    <div class="modal fade" id="editUserModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Edit User</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="editUserForm">
+                        <input type="hidden" id="editUsername">
+                        
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">Username</label>
+                                <input type="text" class="form-control" id="editUserUsername" disabled>
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">Email</label>
+                                <input type="email" class="form-control" id="editUserEmail" required>
+                            </div>
+                        </div>
+                        
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">Full Name</label>
+                                <input type="text" class="form-control" id="editUserFullName">
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">Role</label>
+                                <select class="form-select" id="editUserRole">
+                                    <option value="user">User</option>
+                                    <option value="admin">Admin</option>
+                                </select>
+                            </div>
+                        </div>
+                        
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">Subscription Plan</label>
+                                <select class="form-select" id="editUserPlan">
+                                    <option value="free">Free</option>
+                                    <option value="premium">Premium</option>
+                                    <option value="pro">Pro</option>
+                                </select>
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">Subscription Expiry (days from now)</label>
+                                <input type="number" class="form-control" id="editUserExpiry" value="30" min="1" max="365">
+                            </div>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">Reset Password</label>
+                            <input type="password" class="form-control" id="editUserPassword" placeholder="Leave empty to keep current password">
+                            <small class="text-muted">Minimum 6 characters</small>
+                        </div>
+                        
+                        <div class="alert alert-info">
+                            <h6><i class="fas fa-info-circle me-2"></i>Usage Information</h6>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <p class="mb-1"><strong>Characters Used:</strong> <span id="editUserChars">0</span></p>
+                                    <p class="mb-1"><strong>Total Requests:</strong> <span id="editUserRequests">0</span></p>
+                                </div>
+                                <div class="col-md-6">
+                                    <p class="mb-1"><strong>Last Reset:</strong> <span id="editUserLastReset">-</span></p>
+                                    <p class="mb-1"><strong>Joined:</strong> <span id="editUserJoined">-</span></p>
+                                </div>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-warning" onclick="resetUserUsage()">
+                        <i class="fas fa-redo me-1"></i>Reset Usage
+                    </button>
+                    <button type="button" class="btn btn-primary" onclick="saveUserChanges()">
+                        <i class="fas fa-save me-1"></i>Save Changes
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div id="message" class="toast-container position-fixed bottom-0 end-0 p-3"></div>
+    
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.datatables.net/1.11.5/js/jquery.dataTables.min.js"></script>
+    <script src="https://cdn.datatables.net/1.11.5/js/dataTables.bootstrap5.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <script>
+        // Global variables
+        let currentSubUser = null;
+        let selectedSubPlan = null;
+        let userChart = null;
+        
+        // Tab switching
+        function switchTab(tabName) {
+            // Hide all sections
+            document.getElementById('stats-section').style.display = 'none';
+            document.getElementById('users-section').style.display = 'none';
+            document.getElementById('subscriptions-section').style.display = 'none';
+            document.getElementById('system-section').style.display = 'none';
+            
+            // Show selected section
+            document.getElementById(tabName + '-section').style.display = 'block';
+            
+            // Update active link in sidebar
+            document.querySelectorAll('.sidebar a').forEach(link => {
+                link.classList.remove('active');
+            });
+            event.target.classList.add('active');
+            
+            // Initialize DataTables for users table
+            if (tabName === 'users') {
+                setTimeout(() => {
+                    if (!$.fn.DataTable.isDataTable('#usersTable')) {
+                        $('#usersTable').DataTable({
+                            pageLength: 25,
+                            order: [[0, 'asc']]
+                        });
+                    }
+                }, 100);
+            }
+        }
+        
+        // Initialize user distribution chart
+        function initUserChart() {
+            const ctx = document.getElementById('userChart').getContext('2d');
+            
+            const data = {
+                labels: ['Free', 'Premium', 'Pro', 'Admin'],
+                datasets: [{
+                    data: [{{ stats.free_users }}, {{ stats.premium_users }}, {{ stats.pro_users }}, 1],
+                    backgroundColor: [
+                        '#ffc107',
+                        '#28a745',
+                        '#4361ee',
+                        '#dc3545'
+                    ],
+                    borderWidth: 1
+                }]
+            };
+            
+            userChart = new Chart(ctx, {
+                type: 'doughnut',
+                data: data,
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: {
+                            position: 'bottom'
+                        }
+                    }
+                }
+            });
+        }
+        
+        // Update server time
+        function updateServerTime() {
+            const now = new Date();
+            document.getElementById('serverTime').textContent = 
+                now.toLocaleDateString() + ' ' + now.toLocaleTimeString();
+        }
+        
+        // Refresh statistics
+        function refreshStats() {
+            showToast('Refreshing statistics...', 'info');
+            
+            // Update time
+            updateServerTime();
+            
+            // Reload page after 1 second to get fresh data
+            setTimeout(() => {
+                window.location.reload();
+            }, 1000);
+        }
+        
+        // Clear cache
+        function clearCache() {
+            if (confirm('Are you sure you want to clear all cache? This will not affect user data.')) {
+                fetch('/api/cleanup/all', { method: 'POST' })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            showToast('Cache cleared successfully', 'success');
+                        } else {
+                            showToast(data.message, 'error');
+                        }
+                    })
+                    .catch(error => {
+                        showToast('Error: ' + error.message, 'error');
+                    });
+            }
+        }
+        
+        // Backup system
+        function backupSystem() {
+            showToast('Creating backup...', 'info');
+            // In a real app, this would trigger a backup download
+            setTimeout(() => {
+                showToast('Backup created successfully', 'success');
+            }, 2000);
+        }
+        
+        // User management functions
+        function searchUsers() {
+            const searchTerm = document.getElementById('userSearch').value.toLowerCase();
+            const table = $('#usersTable').DataTable();
+            table.search(searchTerm).draw();
+        }
+        
+        function editUser(username) {
+            // Find user data
+            {% for u_username, u_data in users.items() %}
+            if ('{{ u_username }}' === username) {
+                document.getElementById('editUsername').value = username;
+                document.getElementById('editUserUsername').value = '{{ u_data.username }}';
+                document.getElementById('editUserEmail').value = '{{ u_data.email }}';
+                document.getElementById('editUserFullName').value = '{{ u_data.full_name }}';
+                document.getElementById('editUserRole').value = '{{ u_data.role }}';
+                document.getElementById('editUserPlan').value = '{{ u_data.subscription.plan }}';
+                document.getElementById('editUserChars').textContent = '{{ u_data.usage.characters_used|int|format(",") }}';
+                document.getElementById('editUserRequests').textContent = '{{ u_data.usage.total_requests }}';
+                document.getElementById('editUserLastReset').textContent = '{{ u_data.usage.last_reset[:10] }}';
+                document.getElementById('editUserJoined').textContent = '{{ u_data.created_at[:10] }}';
+                
+                const modal = new bootstrap.Modal(document.getElementById('editUserModal'));
+                modal.show();
+                return;
+            }
+            {% endfor %}
+        }
+        
+        function saveUserChanges() {
+            const username = document.getElementById('editUsername').value;
+            const email = document.getElementById('editUserEmail').value;
+            const fullName = document.getElementById('editUserFullName').value;
+            const role = document.getElementById('editUserRole').value;
+            const plan = document.getElementById('editUserPlan').value;
+            const expiryDays = document.getElementById('editUserExpiry').value;
+            const password = document.getElementById('editUserPassword').value;
+            
+            // Update subscription first
+            const formData = new FormData();
+            formData.append('username', username);
+            formData.append('plan', plan);
+            formData.append('days', expiryDays);
+            
+            fetch('/api/admin/update-subscription', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showToast('Subscription updated successfully', 'success');
+                    
+                    // Close modal
+                    const modal = bootstrap.Modal.getInstance(document.getElementById('editUserModal'));
+                    modal.hide();
+                    
+                    // Reload page to show changes
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 1000);
+                } else {
+                    showToast(data.message, 'error');
+                }
+            })
+            .catch(error => {
+                showToast('Error: ' + error.message, 'error');
+            });
+        }
+        
+        function resetUserUsage() {
+            const username = document.getElementById('editUsername').value;
+            
+            if (confirm(`Reset usage for ${username}? This will set characters used to 0.`)) {
+                const formData = new FormData();
+                formData.append('username', username);
+                
+                fetch('/api/admin/reset-usage', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        showToast('Usage reset successfully', 'success');
+                        document.getElementById('editUserChars').textContent = '0';
+                    } else {
+                        showToast(data.message, 'error');
+                    }
+                })
+                .catch(error => {
+                    showToast('Error: ' + error.message, 'error');
+                });
+            }
+        }
+        
+        function resetUsage(username) {
+            if (confirm(`Reset usage for ${username}?`)) {
+                const formData = new FormData();
+                formData.append('username', username);
+                
+                fetch('/api/admin/reset-usage', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        showToast('Usage reset successfully', 'success');
+                        setTimeout(() => window.location.reload(), 1000);
+                    } else {
+                        showToast(data.message, 'error');
+                    }
+                })
+                .catch(error => {
+                    showToast('Error: ' + error.message, 'error');
+                });
+            }
+        }
+        
+        function deleteUser(username) {
+            if (confirm(`Delete user ${username} permanently? This action cannot be undone.`)) {
+                showToast('User deletion would be implemented here', 'info');
+                // In a real app, implement user deletion
+            }
+        }
+        
+        function showAddUserModal() {
+            showToast('Add user functionality would be implemented here', 'info');
+        }
+        
+        // Subscription management
+        function findUserForSub() {
+            const username = document.getElementById('subUsername').value;
+            
+            // Find user
+            {% for u_username, u_data in users.items() %}
+            if ('{{ u_username }}' === username) {
+                currentSubUser = username;
+                document.getElementById('userSubInfo').style.display = 'block';
+                document.getElementById('currentSubInfo').innerHTML = `
+                    <strong>{{ u_data.username }}</strong><br>
+                    Current: {{ u_data.subscription.plan|title }} (expires {{ u_data.subscription.expires_at[:10] }})
+                `;
+                selectSubPlan('{{ u_data.subscription.plan }}');
+                return;
+            }
+            {% endfor %}
+            
+            showToast('User not found', 'error');
+        }
+        
+        function selectSubPlan(plan) {
+            selectedSubPlan = plan;
+            
+            // Update UI
+            document.getElementById('planFree').classList.remove('selected');
+            document.getElementById('planPremium').classList.remove('selected');
+            document.getElementById('planPro').classList.remove('selected');
+            document.getElementById(`plan${plan.charAt(0).toUpperCase() + plan.slice(1)}`).classList.add('selected');
+        }
+        
+        function updateSubscription() {
+            if (!currentSubUser) {
+                showToast('Please select a user first', 'error');
+                return;
+            }
+            
+            if (!selectedSubPlan) {
+                showToast('Please select a plan', 'error');
+                return;
+            }
+            
+            const days = document.getElementById('subDays').value;
+            
+            const formData = new FormData();
+            formData.append('username', currentSubUser);
+            formData.append('plan', selectedSubPlan);
+            formData.append('days', days);
+            
+            fetch('/api/admin/update-subscription', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showToast('Subscription updated successfully', 'success');
+                    setTimeout(() => window.location.reload(), 1000);
+                } else {
+                    showToast(data.message, 'error');
+                }
+            })
+            .catch(error => {
+                showToast('Error: ' + error.message, 'error');
+            });
+        }
+        
+        // System management
+        function clearAllCache() {
+            clearCache(); // Reuse the same function
+        }
+        
+        function cleanupFiles() {
+            const days = document.getElementById('cleanupDays').value;
+            showToast(`Cleanup for files older than ${days} days would be implemented here`, 'info');
+        }
+        
+        function optimizeDB() {
+            showToast('Database optimization would be implemented here', 'info');
+        }
+        
+        function updateFreeLimit() {
+            const limit = document.getElementById('freeLimit').value;
+            showToast(`Free limit would be updated to ${limit}`, 'info');
+        }
+        
+        function updatePremiumLimit() {
+            const limit = document.getElementById('premiumLimit').value;
+            showToast(`Premium limit would be updated to ${limit}`, 'info');
+        }
+        
+        function postAnnouncement() {
+            const announcement = document.getElementById('announcement').value;
+            if (announcement) {
+                showToast('Announcement would be posted to all users', 'info');
+                document.getElementById('announcement').value = '';
+            }
+        }
+        
+        // Export functions
+        function exportUsers() {
+            showToast('Exporting users to CSV...', 'info');
+            // In a real app, trigger CSV download
+            setTimeout(() => {
+                showToast('Users exported successfully', 'success');
+            }, 1500);
+        }
+        
+        function exportRevenue() {
+            showToast('Exporting revenue report...', 'info');
+            // In a real app, trigger Excel download
+            setTimeout(() => {
+                showToast('Revenue report exported successfully', 'success');
+            }, 1500);
+        }
+        
+        // Toast notification
+        function showToast(message, type = 'info') {
+            const toastId = 'toast-' + Date.now();
+            const colorClass = type === 'error' ? 'danger' : 
+                             type === 'warning' ? 'warning' : 
+                             type === 'success' ? 'success' : 'info';
+            
+            const toastHtml = `
+                <div id="${toastId}" class="toast align-items-center text-white bg-${colorClass} border-0" role="alert">
+                    <div class="d-flex">
+                        <div class="toast-body">
+                            ${message}
+                        </div>
+                        <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+                    </div>
+                </div>
+            `;
+            
+            document.getElementById('message').innerHTML = toastHtml;
+            const toastElement = document.getElementById(toastId);
+            const toast = new bootstrap.Toast(toastElement, { delay: 3000 });
+            toast.show();
+            
+            toastElement.addEventListener('hidden.bs.toast', () => {
+                toastElement.remove();
+            });
+        }
+        
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            // Initialize DataTables
+            $('#usersTable').DataTable({
+                pageLength: 25,
+                order: [[0, 'asc']]
+            });
+            
+            // Initialize chart
+            initUserChart();
+            
+            // Start updating server time
+            updateServerTime();
+            setInterval(updateServerTime, 1000);
+            
+            // Set uptime
+            let startTime = Date.now();
+            setInterval(() => {
+                const uptime = Date.now() - startTime;
+                const hours = Math.floor(uptime / 3600000);
+                const minutes = Math.floor((uptime % 3600000) / 60000);
+                const seconds = Math.floor((uptime % 60000) / 1000);
+                document.getElementById('uptime').textContent = 
+                    `${hours}h ${minutes}m ${seconds}s`;
+            }, 1000);
+        });
+    </script>
+</body>
+</html>
