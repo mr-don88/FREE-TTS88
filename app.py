@@ -1,3 +1,4 @@
+# app.py
 import asyncio
 import json
 import os
@@ -25,6 +26,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 # ==================== SYSTEM CONFIGURATION ====================
+# ==================== SYSTEM CONFIGURATION ====================
 class TTSConfig:
     SETTINGS_FILE = "tts_settings.json"
     
@@ -36,6 +38,462 @@ class TTSConfig:
         "English (US)": [
             {"name": "en-US-GuyNeural", "gender": "🤵Male", "display": "Guy (US)"},
             {"name": "en-US-JennyNeural", "gender": "👩Female", "display": "Jenny (US)"},
+            {"name": "en-US-AvaNeural", "gender": "👩Female", "display": "Ava (US)"},
+            {"name": "en-US-AndrewNeural", "gender": "🤵Male", "display": "Andrew (US)"},
+            {"name": "en-US-EmmaNeural", "gender": "👩Female", "display": "Emma (US)"},
+            {"name": "en-US-BrianNeural", "gender": "🤵Male", "display": "Brian (US)"},
+            {"name": "en-US-AnaNeural", "gender": "👩Female", "display": "Ana (US)"},
+            {"name": "en-US-AndrewMultilingualNeural", "gender": "🤵Male", "display": "Andrew (US • Multi)"},
+            {"name": "en-US-AriaNeural", "gender": "👩Female", "display": "Aria (US)"},
+            {"name": "en-US-AvaMultilingualNeural", "gender": "👩Female", "display": "Ava (US • Multi)"},
+            {"name": "en-US-BrianMultilingualNeural", "gender": "🤵Male", "display": "Brian (US • Multi)"},
+            {"name": "en-US-ChristopherNeural", "gender": "🤵Male", "display": "Christopher (US)"},
+            {"name": "en-US-EmmaMultilingualNeural", "gender": "👩Female", "display": "Emma (US • Multi)"},
+            {"name": "en-US-EricNeural", "gender": "🤵Male", "display": "Eric (US)"},
+            {"name": "en-US-MichelleNeural", "gender": "👩Female", "display": "Michelle (US)"},
+            {"name": "en-US-RogerNeural", "gender": "🤵Male", "display": "Roger (US)"},
+            {"name": "en-US-SteffanNeural", "gender": "🤵Male", "display": "Steffan (US)"}
+        ],
+        
+        "English (UK)": [
+            {"name": "en-GB-LibbyNeural", "gender": "👩Female", "display": "Libby (UK)"},
+            {"name": "en-GB-MiaNeural", "gender": "👩Female", "display": "Mia (UK)"},
+            {"name": "en-GB-RyanNeural", "gender": "🤵Male", "display": "Ryan (UK)"},
+            {"name": "en-GB-MaisieNeural", "gender": "👩Female", "display": "Maisie (UK)"},
+            {"name": "en-GB-SoniaNeural", "gender": "👩Female", "display": "Sonia (UK)"},
+            {"name": "en-GB-ThomasNeural", "gender": "🤵Male", "display": "Thomas (UK)"}
+        ],
+
+        "English (Australia)": [
+            {"name": "en-AU-NatashaNeural", "gender": "👩Female", "display": "Natasha (AU)"},
+            {"name": "en-AU-WilliamNeural", "gender": "🤵Male", "display": "William (AU)"},
+            {"name": "en-AU-TinaNeural", "gender": "👩Female", "display": "Tina (AU)"},
+            {"name": "en-AU-KenNeural", "gender": "🤵Male", "display": "Ken (AU)"}
+        ],
+
+        "English (Canada)": [
+            {"name": "en-CA-ClaraNeural", "gender": "👩Female", "display": "Clara (CA)"},
+            {"name": "en-CA-LiamNeural", "gender": "🤵Male", "display": "Liam (CA)"}
+        ],
+
+        "English (India)": [
+            {"name": "en-IN-NeerjaNeural", "gender": "👩Female", "display": "Neerja (IN)"},
+            {"name": "en-IN-PrabhatNeural", "gender": "🤵Male", "display": "Prabhat (IN)"}
+        ],
+
+        "Mandarin Chinese (zh-CN)": [
+            {"name": "zh-CN-XiaoxiaoNeural", "gender": "👩Female", "display": "晓晓"},
+            {"name": "zh-CN-YunxiNeural", "gender": "🤵Male", "display": "云希"},
+            {"name": "zh-CN-YunjianNeural", "gender": "🤵Male", "display": "云健"},
+            {"name": "zh-CN-XiaoyiNeural", "gender": "👩Female", "display": "晓伊"},
+            {"name": "zh-CN-XiaomoNeural", "gender": "👩Female", "display": "晓墨"},
+            {"name": "zh-CN-XiaoxuanNeural", "gender": "👩Female", "display": "晓萱"},
+            {"name": "zh-CN-XiaohanNeural", "gender": "👩Female", "display": "晓涵"},
+            {"name": "zh-CN-XiaoruiNeural", "gender": "👩Female", "display": "晓瑞"}
+        ],
+
+        "Cantonese (zh-HK)": [
+            {"name": "zh-HK-HiuGaaiNeural", "gender": "👩Female", "display": "曉佳"},
+            {"name": "zh-HK-HiuMaanNeural", "gender": "👩Female", "display": "曉曼"},
+            {"name": "zh-HK-WanLungNeural", "gender": "🤵Male", "display": "雲龍"}
+        ],
+
+        "Taiwanese (zh-TW)": [
+            {"name": "zh-TW-HsiaoChenNeural", "gender": "👩Female", "display": "曉臻"},
+            {"name": "zh-TW-YunJheNeural", "gender": "🤵Male", "display": "雲哲"},
+            {"name": "zh-TW-HsiaoYuNeural", "gender": "👩Female", "display": "曉雨"}
+        ],
+
+        "Japanese": [
+            {"name": "ja-JP-NanamiNeural", "gender": "👩Female", "display": "七海"},
+            {"name": "ja-JP-KeitaNeural", "gender": "🤵Male", "display": "圭太"},
+            {"name": "ja-JP-DaichiNeural", "gender": "🤵Male", "display": "大地"},
+            {"name": "ja-JP-ShioriNeural", "gender": "👩Female", "display": "詩織"},
+            {"name": "ja-JP-AoiNeural", "gender": "👩Female", "display": "葵"},
+            {"name": "ja-JP-MayuNeural", "gender": "👩Female", "display": "繭"},
+            {"name": "ja-JP-NaokiNeural", "gender": "🤵Male", "display": "直樹"}
+        ],
+
+        "Korean": [
+            {"name": "ko-KR-SunHiNeural", "gender": "👩Female", "display": "선희"},
+            {"name": "ko-KR-InJoonNeural", "gender": "🤵Male", "display": "인준"},
+            {"name": "ko-KR-BongJinNeural", "gender": "🤵Male", "display": "봉진"},
+            {"name": "ko-KR-GookMinNeural", "gender": "🤵Male", "display": "국민"},
+            {"name": "ko-KR-JiMinNeural", "gender": "👩Female", "display": "지민"},
+            {"name": "ko-KR-SeoHyeonNeural", "gender": "👩Female", "display": "서현"},
+            {"name": "ko-KR-SoonBokNeural", "gender": "👩Female", "display": "순복"}
+        ],
+
+        "French (France)": [
+            {"name": "fr-FR-DeniseNeural", "gender": "👩Female", "display": "Denise"},
+            {"name": "fr-FR-HenriNeural", "gender": "🤵Male", "display": "Henri"},
+            {"name": "fr-FR-AlainNeural", "gender": "🤵Male", "display": "Alain"},
+            {"name": "fr-FR-JacquelineNeural", "gender": "👩Female", "display": "Jacqueline"},
+            {"name": "fr-FR-ClaudeNeural", "gender": "🤵Male", "display": "Claude"},
+            {"name": "fr-FR-CelesteNeural", "gender": "👩Female", "display": "Celeste"},
+            {"name": "fr-FR-EloiseNeural", "gender": "👩Female", "display": "Eloise"}
+        ],
+
+        "French (Canada)": [
+            {"name": "fr-CA-SylvieNeural", "gender": "👩Female", "display": "Sylvie"},
+            {"name": "fr-CA-AntoineNeural", "gender": "🤵Male", "display": "Antoine"},
+            {"name": "fr-CA-JeanNeural", "gender": "🤵Male", "display": "Jean"}
+        ],
+
+        "Spanish (Spain)": [
+            {"name": "es-ES-AlvaroNeural", "gender": "🤵Male", "display": "Álvaro"},
+            {"name": "es-ES-ElviraNeural", "gender": "👩Female", "display": "Elvira"},
+            {"name": "es-ES-AbrilNeural", "gender": "👩Female", "display": "Abril"},
+            {"name": "es-ES-ManuelNeural", "gender": "🤵Male", "display": "Manuel"},
+            {"name": "es-ES-TrianaNeural", "gender": "👩Female", "display": "Triana"},
+            {"name": "es-ES-LiaNeural", "gender": "👩Female", "display": "Lia"}
+        ],
+
+        "Spanish (Mexico)": [
+            {"name": "es-MX-DaliaNeural", "gender": "👩Female", "display": "Dalia"},
+            {"name": "es-MX-JorgeNeural", "gender": "🤵Male", "display": "Jorge"},
+            {"name": "es-MX-BeatrizNeural", "gender": "👩Female", "display": "Beatriz"},
+            {"name": "es-MX-CandelaNeural", "gender": "👩Female", "display": "Candela"},
+            {"name": "es-MX-CarlotaNeural", "gender": "👩Female", "display": "Carlota"},
+            {"name": "es-MX-CecilioNeural", "gender": "🤵Male", "display": "Cecilio"}
+        ],
+
+        "Spanish (Colombia)": [
+            {"name": "es-CO-SalomeNeural", "gender": "👩Female", "display": "Salome"},
+            {"name": "es-CO-GonzaloNeural", "gender": "🤵Male", "display": "Gonzalo"}
+        ],
+
+        "German": [
+            {"name": "de-DE-KatjaNeural", "gender": "👩Female", "display": "Katja"},
+            {"name": "de-DE-ConradNeural", "gender": "🤵Male", "display": "Conrad"},
+            {"name": "de-DE-AmalaNeural", "gender": "👩Female", "display": "Amala"},
+            {"name": "de-DE-BerndNeural", "gender": "🤵Male", "display": "Bernd"},
+            {"name": "de-DE-ChristophNeural", "gender": "🤵Male", "display": "Christoph"},
+            {"name": "de-DE-LouisaNeural", "gender": "👩Female", "display": "Louisa"},
+            {"name": "de-DE-MajaNeural", "gender": "👩Female", "display": "Maja"}
+        ],
+
+        "Italian": [
+            {"name": "it-IT-IsabellaNeural", "gender": "👩Female", "display": "Isabella"},
+            {"name": "it-IT-DiegoNeural", "gender": "🤵Male", "display": "Diego"},
+            {"name": "it-IT-BenignoNeural", "gender": "🤵Male", "display": "Benigno"},
+            {"name": "it-IT-PalmiraNeural", "gender": "👩Female", "display": "Palmira"},
+            {"name": "it-IT-CalimeroNeural", "gender": "🤵Male", "display": "Calimero"},
+            {"name": "it-IT-CataldoNeural", "gender": "🤵Male", "display": "Cataldo"},
+            {"name": "it-IT-ElsaNeural", "gender": "👩Female", "display": "Elsa"}
+        ],
+
+        "Portuguese (Brazil)": [
+            {"name": "pt-BR-FranciscaNeural", "gender": "👩Female", "display": "Francisca"},
+            {"name": "pt-BR-AntonioNeural", "gender": "🤵Male", "display": "Antônio"},
+            {"name": "pt-BR-BrendaNeural", "gender": "👩Female", "display": "Brenda"},
+            {"name": "pt-BR-DonatoNeural", "gender": "🤵Male", "display": "Donato"},
+            {"name": "pt-BR-ElzaNeural", "gender": "👩Female", "display": "Elza"},
+            {"name": "pt-BR-FabioNeural", "gender": "🤵Male", "display": "Fabio"}
+        ],
+
+        "Portuguese (Portugal)": [
+            {"name": "pt-PT-DuarteNeural", "gender": "🤵Male", "display": "Duarte"},
+            {"name": "pt-PT-RaquelNeural", "gender": "👩Female", "display": "Raquel"},
+            {"name": "pt-PT-FernandaNeural", "gender": "👩Female", "display": "Fernanda"}
+        ],
+
+        "Russian": [
+            {"name": "ru-RU-SvetlanaNeural", "gender": "👩Female", "display": "Светлана"},
+            {"name": "ru-RU-DmitryNeural", "gender": "🤵Male", "display": "Дмитрий"},
+            {"name": "ru-RU-DariyaNeural", "gender": "👩Female", "display": "Дария"},
+            {"name": "ru-RU-AlexanderNeural", "gender": "🤵Male", "display": "Александр"}
+        ],
+
+        "Arabic (Saudi Arabia)": [
+            {"name": "ar-SA-ZariyahNeural", "gender": "👩Female", "display": "زارية"},
+            {"name": "ar-SA-HamedNeural", "gender": "🤵Male", "display": "حامد"}
+        ],
+
+        "Arabic (Egypt)": [
+            {"name": "ar-EG-SalmaNeural", "gender": "👩Female", "display": "سلمى"},
+            {"name": "ar-EG-ShakirNeural", "gender": "🤵Male", "display": "شاكر"}
+        ],
+
+        "Arabic (UAE)": [
+            {"name": "ar-AE-FatimaNeural", "gender": "👩Female", "display": "فاطمة"},
+            {"name": "ar-AE-HamdanNeural", "gender": "🤵Male", "display": "حمدان"}
+        ],
+
+        "Dutch": [
+            {"name": "nl-NL-ColetteNeural", "gender": "👩Female", "display": "Colette"},
+            {"name": "nl-NL-FennaNeural", "gender": "👩Female", "display": "Fenna"},
+            {"name": "nl-NL-MaartenNeural", "gender": "🤵Male", "display": "Maarten"},
+            {"name": "nl-BE-ArnaudNeural", "gender": "🤵Male", "display": "Arnaud"},
+            {"name": "nl-BE-DenaNeural", "gender": "👩Female", "display": "Dena"}
+        ],
+
+        "Polish": [
+            {"name": "pl-PL-AgnieszkaNeural", "gender": "👩Female", "display": "Agnieszka"},
+            {"name": "pl-PL-MarekNeural", "gender": "🤵Male", "display": "Marek"},
+            {"name": "pl-PL-ZofiaNeural", "gender": "👩Female", "display": "Zofia"}
+        ],
+
+        "Turkish": [
+            {"name": "tr-TR-AhmetNeural", "gender": "🤵Male", "display": "Ahmet"},
+            {"name": "tr-TR-EmelNeural", "gender": "👩Female", "display": "Emel"},
+            {"name": "tr-TR-FatmaNeural", "gender": "👩Female", "display": "Fatma"}
+        ],
+
+        "Thai": [
+            {"name": "th-TH-PremwadeeNeural", "gender": "👩Female", "display": "เปรมวดี"},
+            {"name": "th-TH-NiwatNeural", "gender": "🤵Male", "display": "นิวัฒน์"},
+            {"name": "th-TH-AcharaNeural", "gender": "👩Female", "display": "อัจฉรา"}
+        ],
+
+        "Hindi": [
+            {"name": "hi-IN-MadhurNeural", "gender": "🤵Male", "display": "मधुर"},
+            {"name": "hi-IN-SwaraNeural", "gender": "👩Female", "display": "स्वरा"},
+            {"name": "hi-IN-KiranNeural", "gender": "👩Female", "display": "किरण"}
+        ],
+
+        "Swedish": [
+            {"name": "sv-SE-HilleviNeural", "gender": "👩Female", "display": "Hillevi"},
+            {"name": "sv-SE-MattiasNeural", "gender": "🤵Male", "display": "Mattias"},
+            {"name": "sv-SE-SofieNeural", "gender": "👩Female", "display": "Sofie"}
+        ],
+
+        "Norwegian": [
+            {"name": "nb-NO-PernilleNeural", "gender": "👩Female", "display": "Pernille"},
+            {"name": "nb-NO-FinnNeural", "gender": "🤵Male", "display": "Finn"},
+            {"name": "nb-NO-IsleneNeural", "gender": "👩Female", "display": "Islene"}
+        ],
+
+        "Danish": [
+            {"name": "da-DK-ChristelNeural", "gender": "👩Female", "display": "Christel"},
+            {"name": "da-DK-JeppeNeural", "gender": "🤵Male", "display": "Jeppe"}
+        ],
+
+        "Finnish": [
+            {"name": "fi-FI-NooraNeural", "gender": "👩Female", "display": "Noora"},
+            {"name": "fi-FI-SelmaNeural", "gender": "👩Female", "display": "Selma"},
+            {"name": "fi-FI-HarriNeural", "gender": "🤵Male", "display": "Harri"}
+        ],
+
+        "Czech": [
+            {"name": "cs-CZ-VlastaNeural", "gender": "👩Female", "display": "Vlasta"},
+            {"name": "cs-CZ-AntoninNeural", "gender": "🤵Male", "display": "Antonín"}
+        ],
+
+        "Greek": [
+            {"name": "el-GR-AthinaNeural", "gender": "👩Female", "display": "Αθηνά"},
+            {"name": "el-GR-NestorasNeural", "gender": "🤵Male", "display": "Νέστορας"}
+        ],
+
+        "Hebrew": [
+            {"name": "he-IL-HilaNeural", "gender": "👩Female", "display": "הילה"},
+            {"name": "he-IL-AvriNeural", "gender": "🤵Male", "display": "אברי"}
+        ],
+
+        "Indonesian": [
+            {"name": "id-ID-GadisNeural", "gender": "👩Female", "display": "Gadis"},
+            {"name": "id-ID-ArdiNeural", "gender": "🤵Male", "display": "Ardi"}
+        ],
+
+        "Malay": [
+            {"name": "ms-MY-YasminNeural", "gender": "👩Female", "display": "Yasmin"},
+            {"name": "ms-MY-OsmanNeural", "gender": "🤵Male", "display": "Osman"}
+        ],
+
+        "Filipino": [
+            {"name": "fil-PH-BlessicaNeural", "gender": "👩Female", "display": "Blessica"},
+            {"name": "fil-PH-AngeloNeural", "gender": "🤵Male", "display": "Angelo"}
+        ],
+
+        "Ukrainian": [
+            {"name": "uk-UA-PolinaNeural", "gender": "👩Female", "display": "Поліна"},
+            {"name": "uk-UA-OstapNeural", "gender": "🤵Male", "display": "Остап"}
+        ],
+
+        "Romanian": [
+            {"name": "ro-RO-AlinaNeural", "gender": "👩Female", "display": "Alina"},
+            {"name": "ro-RO-EmilNeural", "gender": "🤵Male", "display": "Emil"}
+        ],
+
+        "Hungarian": [
+            {"name": "hu-HU-NoemiNeural", "gender": "👩Female", "display": "Noémi"},
+            {"name": "hu-HU-TamasNeural", "gender": "🤵Male", "display": "Tamás"}
+        ],
+
+        "Bulgarian": [
+            {"name": "bg-BG-KalinaNeural", "gender": "👩Female", "display": "Калина"},
+            {"name": "bg-BG-BorislavNeural", "gender": "🤵Male", "display": "Борислав"}
+        ],
+
+        "Croatian": [
+            {"name": "hr-HR-GabrijelaNeural", "gender": "👩Female", "display": "Gabrijela"},
+            {"name": "hr-HR-SreckoNeural", "gender": "🤵Male", "display": "Srećko"}
+        ],
+
+        "Slovak": [
+            {"name": "sk-SK-ViktoriaNeural", "gender": "👩Female", "display": "Viktória"},
+            {"name": "sk-SK-LukasNeural", "gender": "🤵Male", "display": "Lukáš"}
+        ],
+
+        "Slovenian": [
+            {"name": "sl-SI-PetraNeural", "gender": "👩Female", "display": "Petra"},
+            {"name": "sl-SI-RokNeural", "gender": "🤵Male", "display": "Rok"}
+        ],
+
+        "Serbian": [
+            {"name": "sr-RS-NicholasNeural", "gender": "🤵Male", "display": "Nicholas"},
+            {"name": "sr-RS-SophieNeural", "gender": "👩Female", "display": "Sophie"}
+        ],
+
+        "Catalan": [
+            {"name": "ca-ES-JoanaNeural", "gender": "👩Female", "display": "Joana"},
+            {"name": "ca-ES-AlbaNeural", "gender": "👩Female", "display": "Alba"},
+            {"name": "ca-ES-EnricNeural", "gender": "🤵Male", "display": "Enric"}
+        ],
+
+        "Estonian": [
+            {"name": "et-EE-AnuNeural", "gender": "👩Female", "display": "Anu"},
+            {"name": "et-EE-KertNeural", "gender": "🤵Male", "display": "Kert"}
+        ],
+
+        "Latvian": [
+            {"name": "lv-LV-EveritaNeural", "gender": "👩Female", "display": "Everita"},
+            {"name": "lv-LV-NilsNeural", "gender": "🤵Male", "display": "Nils"}
+        ],
+
+        "Lithuanian": [
+            {"name": "lt-LT-OnaNeural", "gender": "👩Female", "display": "Ona"},
+            {"name": "lt-LT-LeonasNeural", "gender": "🤵Male", "display": "Leonas"}
+        ],
+
+        "Maltese": [
+            {"name": "mt-MT-GraceNeural", "gender": "👩Female", "display": "Grace"},
+            {"name": "mt-MT-JosephNeural", "gender": "🤵Male", "display": "Joseph"}
+        ],
+
+        "Welsh": [
+            {"name": "cy-GB-NiaNeural", "gender": "👩Female", "display": "Nia"},
+            {"name": "cy-GB-AledNeural", "gender": "🤵Male", "display": "Aled"}
+        ],
+
+        "Icelandic": [
+            {"name": "is-IS-GudrunNeural", "gender": "👩Female", "display": "Guðrún"},
+            {"name": "is-IS-GunnarNeural", "gender": "🤵Male", "display": "Gunnar"}
+        ],
+
+        "Irish": [
+            {"name": "ga-IE-OrlaNeural", "gender": "👩Female", "display": "Orla"},
+            {"name": "ga-IE-ColmNeural", "gender": "🤵Male", "display": "Colm"}
+        ],
+
+        "Albanian": [
+            {"name": "sq-AL-AnilaNeural", "gender": "👩Female", "display": "Anila"},
+            {"name": "sq-AL-IlirNeural", "gender": "🤵Male", "display": "Ilir"}
+        ],
+
+        "Armenian": [
+            {"name": "hy-AM-AnahitNeural", "gender": "👩Female", "display": "Անահիտ"},
+            {"name": "hy-AM-HaykNeural", "gender": "🤵Male", "display": "Հայկ"}
+        ],
+
+        "Azerbaijani": [
+            {"name": "az-AZ-BanuNeural", "gender": "👩Female", "display": "Banu"},
+            {"name": "az-AZ-BabekNeural", "gender": "🤵Male", "display": "Babək"}
+        ],
+
+        "Bengali": [
+            {"name": "bn-BD-NabanitaNeural", "gender": "👩Female", "display": "নবনীতা"},
+            {"name": "bn-BD-PradeepNeural", "gender": "🤵Male", "display": "প্রদীপ"}
+        ],
+
+        "Georgian": [
+            {"name": "ka-GE-EkaNeural", "gender": "👩Female", "display": "ეკა"},
+            {"name": "ka-GE-GiorgiNeural", "gender": "🤵Male", "display": "გიორგი"}
+        ],
+
+        "Kazakh": [
+            {"name": "kk-KZ-AigulNeural", "gender": "👩Female", "display": "Айгүл"},
+            {"name": "kk-KZ-DauletNeural", "gender": "🤵Male", "display": "Дәулет"}
+        ],
+
+        "Khmer": [
+            {"name": "km-KH-SreymomNeural", "gender": "👩Female", "display": "ស្រីមុំ"},
+            {"name": "km-KH-PisethNeural", "gender": "🤵Male", "display": "ពិសិដ្ឋ"}
+        ],
+
+        "Lao": [
+            {"name": "lo-LA-KeomanyNeural", "gender": "👩Female", "display": "ແກ້ວມະນີ"},
+            {"name": "lo-LA-ChanthavongNeural", "gender": "🤵Male", "display": "ຈັນທະວົງ"}
+        ],
+
+        "Mongolian": [
+            {"name": "mn-MN-YesuiNeural", "gender": "👩Female", "display": "Есүй"},
+            {"name": "mn-MN-BataaNeural", "gender": "🤵Male", "display": "Батаа"}
+        ],
+
+        "Nepali": [
+            {"name": "ne-NP-HemkalaNeural", "gender": "👩Female", "display": "हेमकला"},
+            {"name": "ne-NP-SagarNeural", "gender": "🤵Male", "display": "सागर"}
+        ],
+
+        "Sinhala": [
+            {"name": "si-LK-ThiliniNeural", "gender": "👩Female", "display": "තිලිනි"},
+            {"name": "si-LK-SameeraNeural", "gender": "🤵Male", "display": "සමීර"}
+        ],
+
+        "Tamil": [
+            {"name": "ta-IN-PallaviNeural", "gender": "👩Female", "display": "பல்லவி"},
+            {"name": "ta-IN-ValluvarNeural", "gender": "🤵Male", "display": "வள்ளுவர்"}
+        ],
+
+        "Telugu": [
+            {"name": "te-IN-ShrutiNeural", "gender": "👩Female", "display": "శ్రుతి"},
+            {"name": "te-IN-MohanNeural", "gender": "🤵Male", "display": "మోహన్"}
+        ],
+
+        "Urdu": [
+            {"name": "ur-PK-UzmaNeural", "gender": "👩Female", "display": "عظمیٰ"},
+            {"name": "ur-PK-AsadNeural", "gender": "🤵Male", "display": "اسد"}
+        ],
+
+        "Persian": [
+            {"name": "fa-IR-DilaraNeural", "gender": "👩Female", "display": "دلارا"},
+            {"name": "fa-IR-FaridNeural", "gender": "🤵Male", "display": "فرید"}
+        ],
+
+        "Afrikaans": [
+            {"name": "af-ZA-AdriNeural", "gender": "👩Female", "display": "Adri"},
+            {"name": "af-ZA-WillemNeural", "gender": "🤵Male", "display": "Willem"}
+        ],
+
+        "Swahili": [
+            {"name": "sw-KE-ZuriNeural", "gender": "👩Female", "display": "Zuri"},
+            {"name": "sw-KE-RafikiNeural", "gender": "🤵Male", "display": "Rafiki"}
+        ],
+
+        "Yoruba": [
+            {"name": "yo-NG-AdeolaNeural", "gender": "👩Female", "display": "Adeola"},
+            {"name": "yo-NG-AremuNeural", "gender": "🤵Male", "display": "Aremu"}
+        ],
+
+        "Zulu": [
+            {"name": "zu-ZA-ThandoNeural", "gender": "👩Female", "display": "Thando"},
+            {"name": "zu-ZA-ThembaNeural", "gender": "🤵Male", "display": "Themba"}
+        ],
+
+        "Hausa": [
+            {"name": "ha-NG-AishaNeural", "gender": "👩Female", "display": "Aisha"},
+            {"name": "ha-NG-AbdullahiNeural", "gender": "🤵Male", "display": "Abdullahi"}
+        ],
+
+        "Igbo": [
+            {"name": "ig-NG-EbeleNeural", "gender": "👩Female", "display": "Ebele"},
+            {"name": "ig-NG-ChineduNeural", "gender": "🤵Male", "display": "Chinedu"}
+        ],
+
+        "Somali": [
+            {"name": "so-SO-UbaxNeural", "gender": "👩Female", "display": "Ubax"},
+            {"name": "so-SO-MuuseNeural", "gender": "🤵Male", "display": "Muuse"}
         ]
     }
     
@@ -57,7 +515,7 @@ class TTSConfig:
 class TaskManager:
     def __init__(self):
         self.tasks = {}
-        self.executor = ThreadPoolExecutor(max_workers=2)
+        self.executor = ThreadPoolExecutor(max_workers=2)  # Giảm workers cho Render
     
     def create_task(self, task_id: str, task_type: str):
         self.tasks[task_id] = {
@@ -574,14 +1032,14 @@ class TextProcessor:
 class AudioCacheManager:
     def __init__(self):
         self.cache_dir = "audio_cache"
-        self.max_cache_size = 50
+        self.max_cache_size = 50  # Giảm cache size cho Render
         os.makedirs(self.cache_dir, exist_ok=True)
     
     def get_cache_key(self, text: str, voice_id: str, rate: int, pitch: int, volume: int) -> str:
         """Tạo cache key từ các tham số"""
         import hashlib
         key_string = f"{text}_{voice_id}_{rate}_{pitch}_{volume}"
-        return hashlib.md5(key_string.encode()).hexdigest()[:12]
+        return hashlib.md5(key_string.encode()).hexdigest()[:12]  # Giới hạn độ dài
     
     def get_cached_audio(self, cache_key: str) -> Optional[str]:
         """Lấy file audio từ cache nếu tồn tại"""
@@ -699,30 +1157,6 @@ class TTSProcessor:
         with open(TTSConfig.SETTINGS_FILE, 'w', encoding='utf-8') as f:
             json.dump(self.settings, f, indent=2, ensure_ascii=False)
     
-    def cleanup_audio_files(self, minutes_old: int = 10):
-        """Xóa các file mp3 trong thư mục static đã cũ hơn số phút chỉ định"""
-        static_dir = "static"
-        if not os.path.exists(static_dir):
-            return
-        
-        now = time.time()
-        deleted_count = 0
-        
-        for f in os.listdir(static_dir):
-            if f.endswith(".mp3") or f.endswith(".srt"):
-                path = os.path.join(static_dir, f)
-                try:
-                    file_age = now - os.path.getmtime(path)
-                    if file_age > minutes_old * 60:  # Chuyển phút sang giây
-                        os.remove(path)
-                        deleted_count += 1
-                        print(f"Cleaned up old audio file: {f}")
-                except Exception as e:
-                    print(f"Error cleaning up file {f}: {e}")
-        
-        if deleted_count > 0:
-            print(f"Cleaned up {deleted_count} old audio files")
-    
     async def generate_speech(self, text: str, voice_id: str, rate: int = 0, pitch: int = 0, volume: int = 100, task_id: str = None):
         """Generate speech using edge-tts with cache optimization"""
         try:
@@ -731,19 +1165,17 @@ class TTSProcessor:
             cached_file = self.cache_manager.get_cached_audio(cache_key)
             
             if cached_file:
-                # Tạo file tạm từ cache nhưng vẫn tạo tên unique
-                unique_id = uuid.uuid4().hex[:8]
-                temp_file = f"temp/cache_{unique_id}_{int(time.time())}.mp3"
+                # Tạo file tạm từ cache
+                temp_file = f"temp/cache_{uuid.uuid4().hex[:8]}.mp3"
                 shutil.copy(cached_file, temp_file)
                 return temp_file, []
             
             # Tạo unique ID để tránh cache
             unique_id = uuid.uuid4().hex[:8]
-            timestamp = int(time.time())
             
             # Format parameters
             rate_str = f"{rate}%" if rate != 0 else "+0%"
-            pitch_str = f"{pitch}Hz" if pitch >= 0 else f"{pitch}Hz"
+            pitch_str = f"+{pitch}Hz" if pitch >= 0 else f"{pitch}Hz"
             
             # Tạo communicate object
             communicate = edge_tts.Communicate(
@@ -770,9 +1202,9 @@ class TTSProcessor:
             if not audio_chunks:
                 return None, []
             
-            # Lưu audio vào file tạm với tên duy nhất
+            # Lưu audio vào file tạm
             audio_data = b"".join(audio_chunks)
-            temp_file = f"temp/audio_{unique_id}_{timestamp}.mp3"
+            temp_file = f"temp/audio_{unique_id}_{int(time.time())}.mp3"
             
             with open(temp_file, "wb") as f:
                 f.write(audio_data)
@@ -831,23 +1263,22 @@ class TTSProcessor:
         """Process text with single voice - Optimized version"""
         # Xóa cache và file cũ trước khi bắt đầu
         self.cleanup_temp_files()
-        self.cleanup_audio_files(10)
         
-        # Tạo tên file duy nhất
-        unique_id = uuid.uuid4().hex[:8]
-        timestamp = int(time.time())
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        output_dir = f"outputs/single_{timestamp}"
+        os.makedirs(output_dir, exist_ok=True)
         
         # Xử lý text
         sentences = self.text_processor.split_sentences(text)
         
-        # Giới hạn số lượng câu
-        MAX_SENTENCES = 50
+        # Giới hạn số lượng câu để xử lý nhanh hơn
+        MAX_SENTENCES = 50  # Giảm cho Render
         if len(sentences) > MAX_SENTENCES:
             sentences = sentences[:MAX_SENTENCES]
             print(f"Processing {MAX_SENTENCES} sentences only for performance")
         
         # Tạo semaphore để giới hạn concurrent requests
-        SEMAPHORE = asyncio.Semaphore(2)
+        SEMAPHORE = asyncio.Semaphore(2)  # Giảm concurrent requests
         
         async def bounded_generate(sentence, index):
             async with SEMAPHORE:
@@ -863,7 +1294,7 @@ class TTSProcessor:
         audio_segments = []
         all_subtitles = []
         
-        for i in range(0, len(sentences), 2):
+        for i in range(0, len(sentences), 2):  # Batch size = 2 (giảm cho Render)
             batch = sentences[i:i+2]
             batch_tasks = [bounded_generate(s, i+j) for j, s in enumerate(batch)]
             batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
@@ -908,38 +1339,28 @@ class TTSProcessor:
                 combined += AudioSegment.silent(duration=pause)
                 current_time += pause
         
-        # Tạo tên file duy nhất
-        unique_filename = f"tts_single_{timestamp}_{unique_id}.{output_format}"
-        output_file = os.path.join("static", unique_filename)
-        
-        # Xuất file audio vào static
-        combined.export(output_file, format=output_format, bitrate="192k")
+        # Xuất file audio
+        output_file = os.path.join(output_dir, f"single_voice.{output_format}")
+        combined.export(output_file, format=output_format, bitrate="192k")  # Giảm bitrate
         
         # Tạo file subtitle
-        srt_filename = f"tts_single_{timestamp}_{unique_id}.srt"
-        srt_file = os.path.join("static", srt_filename)
-        
-        if all_subtitles:
-            self.generate_srt(all_subtitles, srt_file)
-        else:
-            srt_file = None
+        srt_file = self.generate_srt(all_subtitles, output_file)
         
         # Cập nhật progress hoàn thành
         if task_id and task_manager:
             task_manager.update_task(task_id, progress=100, 
                                    message="Audio generation completed")
         
-        return f"/static/{unique_filename}", f"/static/{srt_filename}" if srt_file else None
+        return output_file, srt_file
     
     async def process_multi_voice(self, text: str, voices_config: dict, pause: int, 
                                 repeat: int, output_format: str = "mp3", task_id: str = None):
         """Process text with multiple voices"""
         self.cleanup_temp_files()
-        self.cleanup_audio_files(10)
         
-        # Tạo tên file duy nhất
-        unique_id = uuid.uuid4().hex[:8]
-        timestamp = int(time.time())
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        output_dir = f"outputs/multi_{timestamp}"
+        os.makedirs(output_dir, exist_ok=True)
         
         # Phân tích dialogue
         dialogues = []
@@ -1012,7 +1433,7 @@ class TTSProcessor:
         # Kết hợp với repetition
         combined = AudioSegment.empty()
         
-        for rep in range(min(repeat, 2)):
+        for rep in range(min(repeat, 2)):  # Giới hạn repeat
             if task_id and task_manager:
                 task_manager.update_task(task_id, message=f"Combining repetition {rep+1}/{repeat}")
             
@@ -1025,17 +1446,11 @@ class TTSProcessor:
             if rep < min(repeat, 2) - 1:
                 combined += AudioSegment.silent(duration=pause * 2)
         
-        # Tạo tên file duy nhất
-        unique_filename = f"tts_multi_{timestamp}_{unique_id}.{output_format}"
-        output_file = os.path.join("static", unique_filename)
-        
         # Xuất file
+        output_file = os.path.join(output_dir, f"multi_voice.{output_format}")
         combined.export(output_file, format=output_format, bitrate="192k")
         
         # Tạo SRT với speaker labels
-        srt_filename = f"tts_multi_{timestamp}_{unique_id}.srt"
-        srt_file = os.path.join("static", srt_filename)
-        
         if all_subtitles:
             srt_content = []
             for i, sub in enumerate(all_subtitles, start=1):
@@ -1048,6 +1463,7 @@ class TTSProcessor:
                 text = f"{sub['speaker']}: {sub['text']}"
                 srt_content.append(f"{i}\n{start_str} --> {end_str}\n{text}\n")
             
+            srt_file = os.path.join(output_dir, f"multi_voice.srt")
             with open(srt_file, 'w', encoding='utf-8') as f:
                 f.write('\n'.join(srt_content))
         else:
@@ -1056,17 +1472,16 @@ class TTSProcessor:
         if task_id and task_manager:
             task_manager.update_task(task_id, progress=100, message="Multi-voice audio generated")
         
-        return f"/static/{unique_filename}", f"/static/{srt_filename}" if srt_file else None
+        return output_file, srt_file
     
     async def process_qa_dialogue(self, text: str, qa_config: dict, pause_q: int, 
                                 pause_a: int, repeat: int, output_format: str = "mp3", task_id: str = None):
         """Process Q&A dialogue"""
         self.cleanup_temp_files()
-        self.cleanup_audio_files(10)
         
-        # Tạo tên file duy nhất
-        unique_id = uuid.uuid4().hex[:8]
-        timestamp = int(time.time())
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        output_dir = f"outputs/qa_{timestamp}"
+        os.makedirs(output_dir, exist_ok=True)
         
         # Phân tích Q&A
         dialogues = []
@@ -1139,7 +1554,7 @@ class TTSProcessor:
         # Kết hợp với repetition
         combined = AudioSegment.empty()
         
-        for rep in range(min(repeat, 2)):
+        for rep in range(min(repeat, 2)):  # Giới hạn repeat
             if task_id and task_manager:
                 task_manager.update_task(task_id, message=f"Combining repetition {rep+1}/{repeat}")
             
@@ -1152,17 +1567,11 @@ class TTSProcessor:
             if rep < min(repeat, 2) - 1:
                 combined += AudioSegment.silent(duration=pause_a * 2)
         
-        # Tạo tên file duy nhất
-        unique_filename = f"tts_qa_{timestamp}_{unique_id}.{output_format}"
-        output_file = os.path.join("static", unique_filename)
-        
         # Xuất file
+        output_file = os.path.join(output_dir, f"qa_dialogue.{output_format}")
         combined.export(output_file, format=output_format, bitrate="192k")
         
         # Tạo SRT
-        srt_filename = f"tts_qa_{timestamp}_{unique_id}.srt"
-        srt_file = os.path.join("static", srt_filename)
-        
         if all_subtitles:
             srt_content = []
             for i, sub in enumerate(all_subtitles, start=1):
@@ -1175,6 +1584,7 @@ class TTSProcessor:
                 text = f"{sub['speaker']}: {sub['text']}"
                 srt_content.append(f"{i}\n{start_str} --> {end_str}\n{text}\n")
             
+            srt_file = os.path.join(output_dir, f"qa_dialogue.srt")
             with open(srt_file, 'w', encoding='utf-8') as f:
                 f.write('\n'.join(srt_content))
         else:
@@ -1183,7 +1593,7 @@ class TTSProcessor:
         if task_id and task_manager:
             task_manager.update_task(task_id, progress=100, message="Q&A audio generated")
         
-        return f"/static/{unique_filename}", f"/static/{srt_filename}" if srt_file else None
+        return output_file, srt_file
     
     def cleanup_temp_files(self):
         """Dọn dẹp file tạm"""
@@ -1193,7 +1603,7 @@ class TTSProcessor:
                 try:
                     if os.path.exists(file):
                         file_age = time.time() - os.path.getmtime(file)
-                        if file_age > 3600:
+                        if file_age > 3600:  # Xóa file cũ hơn 1 giờ
                             os.remove(file)
                 except:
                     pass
@@ -1232,21 +1642,16 @@ async def lifespan(app: FastAPI):
     # Cleanup old files on startup
     tts_processor.cleanup_temp_files()
     tts_processor.cleanup_old_outputs(24)
-    tts_processor.cleanup_audio_files(10)
     task_manager.cleanup_old_tasks(1)
     
     # Create template file if not exists
     create_template_file()
-    
-    # Đảm bảo thư mục static tồn tại
-    os.makedirs("static", exist_ok=True)
     
     yield
     
     # Shutdown
     print("Shutting down TTS Generator...")
     tts_processor.cleanup_temp_files()
-    tts_processor.cleanup_audio_files(10)
     if hasattr(task_manager, 'executor'):
         task_manager.executor.shutdown(wait=False)
 
@@ -1254,7 +1659,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Professional TTS Generator", 
     version="2.0.0",
-    lifespan=lifespan
+    lifespan=lifespan  # Sử dụng lifespan thay vì on_event
 )
 
 # Global instances (sẽ được khởi tạo trong lifespan)
@@ -1330,15 +1735,15 @@ async def generate_single_voice(
         # Chạy trong background
         async def background_task():
             try:
-                audio_url, srt_url = await tts_processor.process_single_voice(
+                audio_file, srt_file = await tts_processor.process_single_voice(
                     text, voice_id, rate, pitch, volume, pause, output_format, task_id
                 )
                 
-                if audio_url:
+                if audio_file:
                     result = {
                         "success": True,
-                        "audio_url": audio_url,
-                        "srt_url": srt_url,
+                        "audio_url": f"/download/{os.path.basename(audio_file)}",
+                        "srt_url": f"/download/{os.path.basename(srt_file)}" if srt_file else None,
                         "message": "Audio generated successfully"
                     }
                 else:
@@ -1420,15 +1825,15 @@ async def generate_multi_voice(
         # Background task
         async def background_task():
             try:
-                audio_url, srt_url = await tts_processor.process_multi_voice(
+                audio_file, srt_file = await tts_processor.process_multi_voice(
                     text, voices_config, pause, repeat, output_format, task_id
                 )
                 
-                if audio_url:
+                if audio_file:
                     result = {
                         "success": True,
-                        "audio_url": audio_url,
-                        "srt_url": srt_url,
+                        "audio_url": f"/download/{os.path.basename(audio_file)}",
+                        "srt_url": f"/download/{os.path.basename(srt_file)}" if srt_file else None,
                         "message": "Multi-voice audio generated successfully"
                     }
                 else:
@@ -1511,15 +1916,15 @@ async def generate_qa_dialogue(
         # Background task
         async def background_task():
             try:
-                audio_url, srt_url = await tts_processor.process_qa_dialogue(
+                audio_file, srt_file = await tts_processor.process_qa_dialogue(
                     text, qa_config, pause_q, pause_a, repeat, output_format, task_id
                 )
                 
-                if audio_url:
+                if audio_file:
                     result = {
                         "success": True,
-                        "audio_url": audio_url,
-                        "srt_url": srt_url,
+                        "audio_url": f"/download/{os.path.basename(audio_file)}",
+                        "srt_url": f"/download/{os.path.basename(srt_file)}" if srt_file else None,
                         "message": "Q&A dialogue audio generated successfully"
                     }
                 else:
@@ -1567,9 +1972,11 @@ async def download_file(filename: str):
     """Download generated files"""
     file_path = None
     
-    # Tìm file trong static directory
-    if filename.endswith(('.mp3', '.srt', '.wav')):
-        file_path = os.path.join("static", filename)
+    # Tìm file trong outputs directory
+    for root, dirs, files in os.walk("outputs"):
+        if filename in files:
+            file_path = os.path.join(root, filename)
+            break
     
     if not file_path or not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")
@@ -1594,8 +2001,7 @@ async def cleanup_files():
         
         # Cleanup files
         tts_processor.cleanup_temp_files()
-        tts_processor.cleanup_old_outputs(1)
-        tts_processor.cleanup_audio_files(10)
+        tts_processor.cleanup_old_outputs(1)  # 1 hour
         
         # Clear audio cache
         tts_processor.cache_manager.clear_cache()
@@ -1613,17 +2019,7 @@ async def cleanup_all():
             shutil.rmtree("temp")
             os.makedirs("temp")
         
-        # Xóa toàn bộ static (giữ lại cấu trúc)
-        if os.path.exists("static"):
-            # Chỉ xóa các file audio và subtitle, giữ các file khác
-            for f in os.listdir("static"):
-                if f.endswith(('.mp3', '.srt', '.wav')):
-                    try:
-                        os.remove(os.path.join("static", f))
-                    except:
-                        pass
-        
-        # Xóa toàn bộ outputs
+        # Xóa toàn bộ outputs (giữ lại cấu trúc)
         if os.path.exists("outputs"):
             shutil.rmtree("outputs")
             os.makedirs("outputs")
@@ -1648,8 +2044,9 @@ async def health_check():
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
 # ==================== HTML TEMPLATE CREATION ====================
+# Trong hàm create_template_file(), thay đổi phần Multi-Voice tab:
 def create_template_file():
-    """Create HTML template file with cache buster fix"""
+    """Create HTML template file"""
     template_content = """
 <!DOCTYPE html>
 <html lang="vi">
@@ -1844,6 +2241,11 @@ def create_template_file():
             <li class="nav-item" role="presentation">
                 <button class="nav-link" id="qa-tab" data-bs-toggle="tab" data-bs-target="#qa">
                     <i class="fas fa-comments me-2"></i>Q&A Dialogue
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="tasks-tab" data-bs-toggle="tab" data-bs-target="#tasks">
+                    <i class="fas fa-tasks me-2"></i>Tasks
                 </button>
             </li>
         </ul>
@@ -2263,6 +2665,20 @@ def create_template_file():
                         </a>
                     </div>
                 </div>
+            </div>
+
+            <!-- Tasks Tab -->
+            <div class="tab-pane fade" id="tasks">
+                <h5><i class="fas fa-tasks me-2"></i>Active Tasks</h5>
+                <div id="tasksList">
+                    <div class="text-center text-muted py-4">
+                        <i class="fas fa-clock fa-2x mb-3"></i>
+                        <p>No active tasks</p>
+                    </div>
+                </div>
+                <button class="btn btn-secondary mt-3" onclick="refreshTasks()">
+                    <i class="fas fa-sync-alt me-2"></i>Refresh Tasks
+                </button>
             </div>
         </div>
     </div>
@@ -2904,43 +3320,30 @@ def create_template_file():
             }, 2000); // Poll every 2 seconds
         }
         
-        // Show output based on type (FIXED CACHE BUSTER)
+        // Show output based on type
         function showOutput(type, result) {
             const outputDiv = document.getElementById(`${type}Output`);
             const audioPlayer = document.getElementById(`${type}AudioPlayer`);
             const downloadAudio = document.getElementById(`${type}DownloadAudio`);
             const downloadSubtitle = document.getElementById(`${type}DownloadSubtitle`);
             
-            // Thêm timestamp để tránh cache
+            // Add timestamp to avoid cache
             const timestamp = new Date().getTime();
-            const audioUrl = `${result.audio_url}?v=${timestamp}`;
+            const audioUrl = `${result.audio_url}?t=${timestamp}`;
             
-            // Tạo audio player với cache buster
             audioPlayer.innerHTML = `
-                <audio controls class="w-100" id="${type}AudioElement">
+                <audio controls class="w-100">
                     <source src="${audioUrl}" type="audio/mpeg">
                     Your browser does not support the audio element.
                 </audio>
             `;
             
-            // Tải và chơi audio tự động
-            setTimeout(() => {
-                const audioElement = document.getElementById(`${type}AudioElement`);
-                if (audioElement) {
-                    audioElement.load(); // Force reload with new URL
-                    audioElement.play().catch(e => {
-                        console.log("Auto-play prevented, user can click play manually");
-                    });
-                }
-            }, 100);
-            
-            // Thiết lập download links
             downloadAudio.href = result.audio_url;
-            downloadAudio.download = result.audio_url.split('/').pop();
+            downloadAudio.download = `tts_${type}_audio.mp3`;
             
             if (result.srt_url) {
                 downloadSubtitle.href = result.srt_url;
-                downloadSubtitle.download = result.srt_url.split('/').pop();
+                downloadSubtitle.download = `tts_${type}_subtitle.srt`;
                 downloadSubtitle.style.display = 'inline-block';
             } else {
                 downloadSubtitle.style.display = 'none';
@@ -2980,6 +3383,27 @@ def create_template_file():
                 } finally {
                     hideLoading();
                 }
+            }
+        }
+        
+        // Refresh tasks list
+        async function refreshTasks() {
+            try {
+                const tasksList = document.getElementById('tasksList');
+                tasksList.innerHTML = '<div class="text-center"><div class="spinner-border"></div></div>';
+                
+                // In a real app, you would fetch tasks from an API
+                setTimeout(() => {
+                    tasksList.innerHTML = `
+                        <div class="text-center text-muted py-4">
+                            <i class="fas fa-clock fa-2x mb-3"></i>
+                            <p>No active tasks</p>
+                        </div>
+                    `;
+                    showToast('Task list refreshed');
+                }, 1000);
+            } catch (error) {
+                console.error('Error refreshing tasks:', error);
             }
         }
         
@@ -3102,5 +3526,5 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=port,
         log_level="info",
-        reload=False
+        reload=False  # Disable reload for production
     )
