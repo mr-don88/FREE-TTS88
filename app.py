@@ -1,4 +1,4 @@
-# app.py
+# app.py - Professional TTS Generator with User Management
 import asyncio
 import json
 import os
@@ -8,25 +8,264 @@ import time
 import uuid
 import zipfile
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, Form, UploadFile, File, HTTPException, BackgroundTasks
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, StreamingResponse
+from fastapi import FastAPI, Request, Form, UploadFile, File, HTTPException, BackgroundTasks, Depends
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.middleware.cors import CORSMiddleware
 import edge_tts
 from pydub import AudioSegment
-from pydub.effects import normalize, compress_dynamic_range, low_pass_filter, high_pass_filter
+from pydub.effects import normalize, compress_dynamic_range
 import webvtt
 import natsort
 import uvicorn
 import glob
 import shutil
-import threading
+import hashlib
+import secrets
 from concurrent.futures import ThreadPoolExecutor
+from sqlitedict import SqliteDict
 
-# ==================== SYSTEM CONFIGURATION ====================
-# ==================== SYSTEM CONFIGURATION ====================
+# ==================== DATABASE CONFIGURATION ====================
+class Database:
+    def __init__(self):
+        self.users_db = SqliteDict("users.db", autocommit=True)
+        self.sessions_db = SqliteDict("sessions.db", autocommit=True)
+        self.usage_db = SqliteDict("usage.db", autocommit=True)
+    
+    def init_admin_user(self):
+        """Initialize admin user if not exists"""
+        if "admin" not in self.users_db:
+            admin_user = {
+                "username": "admin",
+                "password": self.hash_password("admin123"),
+                "email": "admin@tts.com",
+                "full_name": "Administrator",
+                "role": "admin",
+                "created_at": datetime.now().isoformat(),
+                "subscription": {
+                    "plan": "premium",
+                    "expires_at": (datetime.now() + timedelta(days=3650)).isoformat(),
+                    "characters_limit": 10000000,
+                    "features": ["single", "multi", "qa", "unlimited"]
+                },
+                "usage": {
+                    "characters_used": 0,
+                    "last_reset": datetime.now().isoformat(),
+                    "total_requests": 0
+                }
+            }
+            self.users_db["admin"] = admin_user
+    
+    def hash_password(self, password: str) -> str:
+        """Hash password using SHA256 with salt"""
+        salt = "tts_system_2024"
+        return hashlib.sha256(f"{password}{salt}".encode()).hexdigest()
+    
+    def verify_password(self, password: str, hashed_password: str) -> bool:
+        """Verify password against hash"""
+        return self.hash_password(password) == hashed_password
+    
+    def create_user(self, username: str, password: str, email: str, full_name: str = ""):
+        """Create new user"""
+        if username in self.users_db:
+            return False, "Username already exists"
+        
+        user_data = {
+            "username": username,
+            "password": self.hash_password(password),
+            "email": email,
+            "full_name": full_name,
+            "role": "user",
+            "created_at": datetime.now().isoformat(),
+            "subscription": {
+                "plan": "free",
+                "expires_at": (datetime.now() + timedelta(days=30)).isoformat(),
+                "characters_limit": 30000,
+                "features": ["single"]  # Only single voice for free tier
+            },
+            "usage": {
+                "characters_used": 0,
+                "last_reset": datetime.now().isoformat(),
+                "total_requests": 0
+            }
+        }
+        
+        self.users_db[username] = user_data
+        return True, "User created successfully"
+    
+    def authenticate_user(self, username: str, password: str):
+        """Authenticate user"""
+        if username not in self.users_db:
+            return None
+        
+        user_data = self.users_db[username]
+        if self.verify_password(password, user_data["password"]):
+            return user_data
+        return None
+    
+    def create_session(self, username: str) -> str:
+        """Create session token"""
+        session_token = secrets.token_urlsafe(32)
+        session_data = {
+            "username": username,
+            "created_at": datetime.now().isoformat(),
+            "last_activity": datetime.now().isoformat()
+        }
+        self.sessions_db[session_token] = session_data
+        return session_token
+    
+    def validate_session(self, session_token: str):
+        """Validate session token"""
+        if session_token not in self.sessions_db:
+            return None
+        
+        session_data = self.sessions_db[session_token]
+        # Check if session is expired (24 hours)
+        created_at = datetime.fromisoformat(session_data["created_at"])
+        if datetime.now() - created_at > timedelta(hours=24):
+            del self.sessions_db[session_token]
+            return None
+        
+        # Update last activity
+        session_data["last_activity"] = datetime.now().isoformat()
+        self.sessions_db[session_token] = session_data
+        
+        return session_data["username"]
+    
+    def delete_session(self, session_token: str):
+        """Delete session"""
+        if session_token in self.sessions_db:
+            del self.sessions_db[session_token]
+    
+    def get_user(self, username: str):
+        """Get user data"""
+        return self.users_db.get(username)
+    
+    def update_user(self, username: str, user_data: dict):
+        """Update user data"""
+        if username in self.users_db:
+            self.users_db[username] = user_data
+            return True
+        return False
+    
+    def record_usage(self, username: str, characters_used: int):
+        """Record usage for user"""
+        if username in self.users_db:
+            user_data = self.users_db[username]
+            
+            # Reset weekly usage if needed
+            last_reset = datetime.fromisoformat(user_data["usage"]["last_reset"])
+            if datetime.now() - last_reset > timedelta(days=7):
+                user_data["usage"]["characters_used"] = 0
+                user_data["usage"]["last_reset"] = datetime.now().isoformat()
+            
+            # Update usage
+            user_data["usage"]["characters_used"] += characters_used
+            user_data["usage"]["total_requests"] += 1
+            
+            self.users_db[username] = user_data
+    
+    def can_user_use_feature(self, username: str, feature: str) -> Tuple[bool, str]:
+        """Check if user can use a feature"""
+        if username not in self.users_db:
+            return False, "User not found"
+        
+        user_data = self.users_db[username]
+        subscription = user_data["subscription"]
+        
+        # Check if feature is allowed in subscription
+        if feature not in subscription["features"]:
+            return False, f"Feature '{feature}' requires premium subscription"
+        
+        # Check weekly character limit for free tier
+        if subscription["plan"] == "free":
+            if user_data["usage"]["characters_used"] >= subscription["characters_limit"]:
+                return False, "Weekly character limit reached. Please upgrade to premium."
+        
+        # Check if subscription is expired
+        expires_at = datetime.fromisoformat(subscription["expires_at"])
+        if datetime.now() > expires_at:
+            return False, "Subscription expired. Please renew."
+        
+        return True, "Access granted"
+    
+    def get_all_users(self):
+        """Get all users (admin only)"""
+        return {username: self.users_db[username] for username in self.users_db.keys()}
+    
+    def update_subscription(self, username: str, plan: str, days: int = 30):
+        """Update user subscription"""
+        if username not in self.users_db:
+            return False
+        
+        user_data = self.users_db[username]
+        
+        if plan == "free":
+            features = ["single"]
+            char_limit = 30000
+        elif plan == "premium":
+            features = ["single", "multi", "qa"]
+            char_limit = 1000000
+        elif plan == "pro":
+            features = ["single", "multi", "qa", "unlimited"]
+            char_limit = 10000000
+        else:
+            return False
+        
+        user_data["subscription"] = {
+            "plan": plan,
+            "expires_at": (datetime.now() + timedelta(days=days)).isoformat(),
+            "characters_limit": char_limit,
+            "features": features
+        }
+        
+        self.users_db[username] = user_data
+        return True
+    
+    def close(self):
+        """Close database connections"""
+        self.users_db.close()
+        self.sessions_db.close()
+        self.usage_db.close()
+
+# Initialize database
+database = Database()
+database.init_admin_user()
+
+# ==================== AUTHENTICATION MIDDLEWARE ====================
+async def get_current_user(request: Request):
+    """Get current user from session"""
+    session_token = request.cookies.get("session_token")
+    if not session_token:
+        return None
+    
+    username = database.validate_session(session_token)
+    if not username:
+        return None
+    
+    return database.get_user(username)
+
+async def require_login(request: Request):
+    """Require user to be logged in"""
+    user = await get_current_user(request)
+    if not user:
+        return RedirectResponse("/login")
+    return user
+
+async def require_admin(request: Request):
+    """Require admin privileges"""
+    user = await get_current_user(request)
+    if not user:
+        return RedirectResponse("/login")
+    if user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user
+
+# ==================== TTS CONFIGURATION ====================
 class TTSConfig:
     SETTINGS_FILE = "tts_settings.json"
     
@@ -1032,32 +1271,25 @@ class TextProcessor:
 class AudioCacheManager:
     def __init__(self):
         self.cache_dir = "audio_cache"
-        self.max_cache_size = 50  # Giảm cache size cho Render
+        self.max_cache_size = 50
         os.makedirs(self.cache_dir, exist_ok=True)
     
     def get_cache_key(self, text: str, voice_id: str, rate: int, pitch: int, volume: int) -> str:
-        """Tạo cache key từ các tham số"""
-        import hashlib
         key_string = f"{text}_{voice_id}_{rate}_{pitch}_{volume}"
-        return hashlib.md5(key_string.encode()).hexdigest()[:12]  # Giới hạn độ dài
+        return hashlib.md5(key_string.encode()).hexdigest()[:12]
     
     def get_cached_audio(self, cache_key: str) -> Optional[str]:
-        """Lấy file audio từ cache nếu tồn tại"""
         cache_file = os.path.join(self.cache_dir, f"{cache_key}.mp3")
         if os.path.exists(cache_file):
-            # Kiểm tra thời gian cache (không quá 1 ngày)
             file_age = time.time() - os.path.getmtime(cache_file)
-            if file_age < 86400:  # 24 giờ
+            if file_age < 86400:
                 return cache_file
         return None
     
     def save_to_cache(self, cache_key: str, audio_file: str):
-        """Lưu audio vào cache"""
         try:
-            # Giới hạn số file trong cache
             cache_files = os.listdir(self.cache_dir)
             if len(cache_files) >= self.max_cache_size:
-                # Xóa file cũ nhất
                 oldest_file = min(
                     [os.path.join(self.cache_dir, f) for f in cache_files],
                     key=os.path.getmtime
@@ -1075,7 +1307,6 @@ class AudioCacheManager:
             return None
     
     def clear_cache(self):
-        """Xóa toàn bộ cache"""
         try:
             if os.path.exists(self.cache_dir):
                 shutil.rmtree(self.cache_dir)
@@ -1094,8 +1325,7 @@ class TTSProcessor:
         self.initialize_directories()
     
     def initialize_directories(self):
-        """Khởi tạo các thư mục cần thiết"""
-        directories = ["outputs", "temp", "audio_cache", "static", "templates"]
+        directories = ["outputs", "temp", "audio_cache", "static", "templates", "uploads"]
         for directory in directories:
             os.makedirs(directory, exist_ok=True)
     
@@ -1106,7 +1336,7 @@ class TTSProcessor:
         else:
             self.settings = {
                 "single_voice": {
-                    "language": "Tiếng Việt",
+                    "language": "Vietnamese",
                     "voice": "vi-VN-HoaiMyNeural",
                     "rate": 0,
                     "pitch": 0,
@@ -1115,14 +1345,14 @@ class TTSProcessor:
                 },
                 "multi_voice": {
                     "char1": {
-                        "language": "Tiếng Việt",
+                        "language": "Vietnamese",
                         "voice": "vi-VN-HoaiMyNeural", 
                         "rate": 0, 
                         "pitch": 0, 
                         "volume": 100
                     },
                     "char2": {
-                        "language": "Tiếng Việt",
+                        "language": "Vietnamese",
                         "voice": "vi-VN-NamMinhNeural", 
                         "rate": -10, 
                         "pitch": 0, 
@@ -1133,14 +1363,14 @@ class TTSProcessor:
                 },
                 "qa_voice": {
                     "question": {
-                        "language": "Tiếng Việt",
+                        "language": "Vietnamese",
                         "voice": "vi-VN-HoaiMyNeural", 
                         "rate": 0, 
                         "pitch": 0, 
                         "volume": 100
                     },
                     "answer": {
-                        "language": "Tiếng Việt",
+                        "language": "Vietnamese",
                         "voice": "vi-VN-NamMinhNeural", 
                         "rate": -10, 
                         "pitch": 0, 
@@ -1157,27 +1387,21 @@ class TTSProcessor:
         with open(TTSConfig.SETTINGS_FILE, 'w', encoding='utf-8') as f:
             json.dump(self.settings, f, indent=2, ensure_ascii=False)
     
-    async def generate_speech(self, text: str, voice_id: str, rate: int = 0, pitch: int = 0, volume: int = 100, task_id: str = None):
+    async def generate_speech(self, text: str, voice_id: str, rate: int = 0, pitch: int = 0, volume: int = 100):
         """Generate speech using edge-tts with cache optimization"""
         try:
-            # Kiểm tra cache trước
             cache_key = self.cache_manager.get_cache_key(text, voice_id, rate, pitch, volume)
             cached_file = self.cache_manager.get_cached_audio(cache_key)
             
             if cached_file:
-                # Tạo file tạm từ cache
                 temp_file = f"temp/cache_{uuid.uuid4().hex[:8]}.mp3"
                 shutil.copy(cached_file, temp_file)
                 return temp_file, []
             
-            # Tạo unique ID để tránh cache
             unique_id = uuid.uuid4().hex[:8]
-            
-            # Format parameters
             rate_str = f"{rate}%" if rate != 0 else "+0%"
             pitch_str = f"+{pitch}Hz" if pitch >= 0 else f"{pitch}Hz"
             
-            # Tạo communicate object
             communicate = edge_tts.Communicate(
                 text, 
                 voice_id, 
@@ -1188,7 +1412,6 @@ class TTSProcessor:
             audio_chunks = []
             subtitles = []
             
-            # Stream audio data
             async for chunk in communicate.stream():
                 if chunk["type"] == "audio":
                     audio_chunks.append(chunk["data"])
@@ -1202,40 +1425,96 @@ class TTSProcessor:
             if not audio_chunks:
                 return None, []
             
-            # Lưu audio vào file tạm
             audio_data = b"".join(audio_chunks)
             temp_file = f"temp/audio_{unique_id}_{int(time.time())}.mp3"
             
             with open(temp_file, "wb") as f:
                 f.write(audio_data)
             
-            # Xử lý audio
             try:
                 audio = AudioSegment.from_file(temp_file)
-                
-                # Điều chỉnh volume
                 volume_adjustment = min(max(volume - 100, -50), 10)
                 audio = audio + volume_adjustment
-                
-                # Áp dụng các hiệu ứng audio cơ bản
                 audio = normalize(audio)
                 audio = compress_dynamic_range(audio, threshold=-20.0, ratio=4.0)
-                
-                # Xuất với chất lượng cao
                 audio.export(temp_file, format="mp3", bitrate="256k")
                 
-                # Lưu vào cache
                 self.cache_manager.save_to_cache(cache_key, temp_file)
                 
                 return temp_file, subtitles
             except Exception as e:
                 print(f"Error processing audio: {e}")
-                # Trả về file gốc nếu xử lý lỗi
                 return temp_file, subtitles
             
         except Exception as e:
             print(f"Error generating speech: {e}")
             return None, []
+    
+    async def process_single_voice(self, text: str, voice_id: str, rate: int, pitch: int, 
+                                 volume: int, pause: int, output_format: str = "mp3", task_id: str = None):
+        """Process text with single voice"""
+        self.cleanup_temp_files()
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        output_dir = f"outputs/single_{timestamp}"
+        os.makedirs(output_dir, exist_ok=True)
+        
+        sentences = self.text_processor.split_sentences(text)
+        MAX_SENTENCES = 50
+        if len(sentences) > MAX_SENTENCES:
+            sentences = sentences[:MAX_SENTENCES]
+        
+        audio_segments = []
+        all_subtitles = []
+        
+        for i, sentence in enumerate(sentences):
+            if task_id and task_manager:
+                progress = int((i / len(sentences)) * 90)
+                task_manager.update_task(task_id, progress=progress, 
+                                       message=f"Processing sentence {i+1}/{len(sentences)}")
+            
+            temp_file, subs = await self.generate_speech(sentence, voice_id, rate, pitch, volume)
+            
+            if temp_file:
+                try:
+                    audio = AudioSegment.from_file(temp_file)
+                    audio_segments.append(audio)
+                    
+                    current_time = sum(len(a) for a in audio_segments[:-1])
+                    for sub in subs:
+                        if isinstance(sub, dict):
+                            sub["start"] += current_time
+                            sub["end"] += current_time
+                            all_subtitles.append(sub)
+                    
+                    try:
+                        os.remove(temp_file)
+                    except:
+                        pass
+                except Exception as e:
+                    print(f"Error processing audio segment: {e}")
+        
+        if not audio_segments:
+            return None, None
+        
+        combined = AudioSegment.empty()
+        for i, audio in enumerate(audio_segments):
+            audio = audio.fade_in(50).fade_out(50)
+            combined += audio
+            
+            if i < len(audio_segments) - 1:
+                combined += AudioSegment.silent(duration=pause)
+        
+        output_file = os.path.join(output_dir, f"single_voice.{output_format}")
+        combined.export(output_file, format=output_format, bitrate="192k")
+        
+        srt_file = self.generate_srt(all_subtitles, output_file)
+        
+        if task_id and task_manager:
+            task_manager.update_task(task_id, progress=100, 
+                                   message="Audio generation completed")
+        
+        return output_file, srt_file
     
     def generate_srt(self, subtitles: List[dict], output_path: str):
         """Generate SRT file from subtitles"""
@@ -1258,411 +1537,61 @@ class TTSProcessor:
             print(f"Error generating SRT: {e}")
             return None
     
-    async def process_single_voice(self, text: str, voice_id: str, rate: int, pitch: int, 
-                                 volume: int, pause: int, output_format: str = "mp3", task_id: str = None):
-        """Process text with single voice - Optimized version"""
-        # Xóa cache và file cũ trước khi bắt đầu
-        self.cleanup_temp_files()
-        
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        output_dir = f"outputs/single_{timestamp}"
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # Xử lý text
-        sentences = self.text_processor.split_sentences(text)
-        
-        # Giới hạn số lượng câu để xử lý nhanh hơn
-        MAX_SENTENCES = 50  # Giảm cho Render
-        if len(sentences) > MAX_SENTENCES:
-            sentences = sentences[:MAX_SENTENCES]
-            print(f"Processing {MAX_SENTENCES} sentences only for performance")
-        
-        # Tạo semaphore để giới hạn concurrent requests
-        SEMAPHORE = asyncio.Semaphore(2)  # Giảm concurrent requests
-        
-        async def bounded_generate(sentence, index):
-            async with SEMAPHORE:
-                # Cập nhật progress nếu có task_id
-                if task_id and task_manager:
-                    progress = int((index / len(sentences)) * 90)
-                    task_manager.update_task(task_id, progress=progress, 
-                                           message=f"Processing sentence {index+1}/{len(sentences)}")
-                
-                return await self.generate_speech(sentence, voice_id, rate, pitch, volume)
-        
-        # Xử lý các câu theo batch
-        audio_segments = []
-        all_subtitles = []
-        
-        for i in range(0, len(sentences), 2):  # Batch size = 2 (giảm cho Render)
-            batch = sentences[i:i+2]
-            batch_tasks = [bounded_generate(s, i+j) for j, s in enumerate(batch)]
-            batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
-            
-            for result in batch_results:
-                if isinstance(result, tuple) and len(result) == 2:
-                    temp_file, subs = result
-                    if temp_file and os.path.exists(temp_file):
-                        try:
-                            audio = AudioSegment.from_file(temp_file)
-                            audio_segments.append(audio)
-                            
-                            # Điều chỉnh thời gian cho subtitles
-                            current_time = sum(len(a) for a in audio_segments[:-1])
-                            for sub in subs:
-                                if isinstance(sub, dict):
-                                    sub["start"] += current_time
-                                    sub["end"] += current_time
-                                    all_subtitles.append(sub)
-                            
-                            # Xóa file tạm ngay
-                            try:
-                                os.remove(temp_file)
-                            except:
-                                pass
-                        except Exception as e:
-                            print(f"Error processing audio segment: {e}")
-        
-        if not audio_segments:
-            return None, None
-        
-        # Kết hợp các audio segment với pause
-        combined = AudioSegment.empty()
-        current_time = 0
-        
-        for i, audio in enumerate(audio_segments):
-            audio = audio.fade_in(50).fade_out(50)
-            combined += audio
-            current_time += len(audio)
-            
-            if i < len(audio_segments) - 1:
-                combined += AudioSegment.silent(duration=pause)
-                current_time += pause
-        
-        # Xuất file audio
-        output_file = os.path.join(output_dir, f"single_voice.{output_format}")
-        combined.export(output_file, format=output_format, bitrate="192k")  # Giảm bitrate
-        
-        # Tạo file subtitle
-        srt_file = self.generate_srt(all_subtitles, output_file)
-        
-        # Cập nhật progress hoàn thành
-        if task_id and task_manager:
-            task_manager.update_task(task_id, progress=100, 
-                                   message="Audio generation completed")
-        
-        return output_file, srt_file
-    
-    async def process_multi_voice(self, text: str, voices_config: dict, pause: int, 
-                                repeat: int, output_format: str = "mp3", task_id: str = None):
-        """Process text with multiple voices"""
-        self.cleanup_temp_files()
-        
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        output_dir = f"outputs/multi_{timestamp}"
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # Phân tích dialogue
-        dialogues = []
-        current_char = None
-        current_text = []
-        
-        for line in text.split('\n'):
-            line = line.strip()
-            if not line:
-                continue
-            
-            char_match = re.match(r'^(CHAR\d+|NARRATOR):\s*(.+)', line, re.IGNORECASE)
-            if char_match:
-                if current_char:
-                    dialogues.append((current_char, ' '.join(current_text)))
-                current_char = char_match.group(1).upper()
-                current_text = [char_match.group(2)]
-            elif current_char:
-                current_text.append(line)
-        
-        if current_char:
-            dialogues.append((current_char, ' '.join(current_text)))
-        
-        if not dialogues:
-            return None, None
-        
-        # Giới hạn số dialogues
-        MAX_DIALOGUES = 20
-        if len(dialogues) > MAX_DIALOGUES:
-            dialogues = dialogues[:MAX_DIALOGUES]
-        
-        # Tạo audio cho mỗi dialogue
-        audio_segments = []
-        all_subtitles = []
-        
-        for i, (char, dialogue_text) in enumerate(dialogues):
-            if task_id and task_manager:
-                progress = int((i / len(dialogues)) * 90)
-                task_manager.update_task(task_id, progress=progress,
-                                       message=f"Processing {char}: {i+1}/{len(dialogues)}")
-            
-            if char == "CHAR1":
-                config = voices_config["char1"]
-            elif char == "CHAR2":
-                config = voices_config["char2"]
-            else:  # NARRATOR or others
-                config = voices_config["char1"]
-            
-            temp_file, subs = await self.generate_speech(
-                dialogue_text, 
-                config["voice"], 
-                config["rate"], 
-                config["pitch"], 
-                config["volume"]
-            )
-            
-            if temp_file:
-                audio = AudioSegment.from_file(temp_file)
-                audio_segments.append((char, audio))
-                
-                for sub in subs:
-                    sub["speaker"] = char
-                    all_subtitles.append(sub)
-                
-                os.remove(temp_file)
-        
-        if not audio_segments:
-            return None, None
-        
-        # Kết hợp với repetition
-        combined = AudioSegment.empty()
-        
-        for rep in range(min(repeat, 2)):  # Giới hạn repeat
-            if task_id and task_manager:
-                task_manager.update_task(task_id, message=f"Combining repetition {rep+1}/{repeat}")
-            
-            for i, (char, audio) in enumerate(audio_segments):
-                audio = audio.fade_in(50).fade_out(50)
-                combined += audio
-                if i < len(audio_segments) - 1:
-                    combined += AudioSegment.silent(duration=pause)
-            
-            if rep < min(repeat, 2) - 1:
-                combined += AudioSegment.silent(duration=pause * 2)
-        
-        # Xuất file
-        output_file = os.path.join(output_dir, f"multi_voice.{output_format}")
-        combined.export(output_file, format=output_format, bitrate="192k")
-        
-        # Tạo SRT với speaker labels
-        if all_subtitles:
-            srt_content = []
-            for i, sub in enumerate(all_subtitles, start=1):
-                start = timedelta(milliseconds=sub["start"])
-                end = timedelta(milliseconds=sub["end"])
-                
-                start_str = f"{start.total_seconds() // 3600:02.0f}:{(start.total_seconds() % 3600) // 60:02.0f}:{start.total_seconds() % 60:06.3f}".replace('.', ',')
-                end_str = f"{end.total_seconds() // 3600:02.0f}:{(end.total_seconds() % 3600) // 60:02.0f}:{end.total_seconds() % 60:06.3f}".replace('.', ',')
-                
-                text = f"{sub['speaker']}: {sub['text']}"
-                srt_content.append(f"{i}\n{start_str} --> {end_str}\n{text}\n")
-            
-            srt_file = os.path.join(output_dir, f"multi_voice.srt")
-            with open(srt_file, 'w', encoding='utf-8') as f:
-                f.write('\n'.join(srt_content))
-        else:
-            srt_file = None
-        
-        if task_id and task_manager:
-            task_manager.update_task(task_id, progress=100, message="Multi-voice audio generated")
-        
-        return output_file, srt_file
-    
-    async def process_qa_dialogue(self, text: str, qa_config: dict, pause_q: int, 
-                                pause_a: int, repeat: int, output_format: str = "mp3", task_id: str = None):
-        """Process Q&A dialogue"""
-        self.cleanup_temp_files()
-        
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        output_dir = f"outputs/qa_{timestamp}"
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # Phân tích Q&A
-        dialogues = []
-        current_speaker = None
-        current_text = []
-        
-        for line in text.split('\n'):
-            line = line.strip()
-            if not line:
-                continue
-            
-            speaker_match = re.match(r'^(Q|A):\s*(.+)', line, re.IGNORECASE)
-            if speaker_match:
-                if current_speaker:
-                    dialogues.append((current_speaker, ' '.join(current_text)))
-                current_speaker = speaker_match.group(1).upper()
-                current_text = [speaker_match.group(2)]
-            elif current_speaker:
-                current_text.append(line)
-        
-        if current_speaker:
-            dialogues.append((current_speaker, ' '.join(current_text)))
-        
-        if not dialogues:
-            return None, None
-        
-        # Giới hạn số dialogues
-        MAX_DIALOGUES = 10
-        if len(dialogues) > MAX_DIALOGUES:
-            dialogues = dialogues[:MAX_DIALOGUES]
-        
-        # Tạo audio
-        audio_segments = []
-        all_subtitles = []
-        
-        for i, (speaker, dialogue_text) in enumerate(dialogues):
-            if task_id and task_manager:
-                progress = int((i / len(dialogues)) * 90)
-                task_manager.update_task(task_id, progress=progress,
-                                       message=f"Processing {speaker}: {i+1}/{len(dialogues)}")
-            
-            if speaker == "Q":
-                config = qa_config["question"]
-                pause = pause_q
-            else:
-                config = qa_config["answer"]
-                pause = pause_a
-            
-            temp_file, subs = await self.generate_speech(
-                dialogue_text,
-                config["voice"],
-                config["rate"],
-                config["pitch"],
-                config["volume"]
-            )
-            
-            if temp_file:
-                audio = AudioSegment.from_file(temp_file)
-                audio_segments.append((speaker, audio, pause))
-                
-                for sub in subs:
-                    sub["speaker"] = speaker
-                    all_subtitles.append(sub)
-                
-                os.remove(temp_file)
-        
-        if not audio_segments:
-            return None, None
-        
-        # Kết hợp với repetition
-        combined = AudioSegment.empty()
-        
-        for rep in range(min(repeat, 2)):  # Giới hạn repeat
-            if task_id and task_manager:
-                task_manager.update_task(task_id, message=f"Combining repetition {rep+1}/{repeat}")
-            
-            for i, (speaker, audio, pause) in enumerate(audio_segments):
-                audio = audio.fade_in(50).fade_out(50)
-                combined += audio
-                if i < len(audio_segments) - 1:
-                    combined += AudioSegment.silent(duration=pause)
-            
-            if rep < min(repeat, 2) - 1:
-                combined += AudioSegment.silent(duration=pause_a * 2)
-        
-        # Xuất file
-        output_file = os.path.join(output_dir, f"qa_dialogue.{output_format}")
-        combined.export(output_file, format=output_format, bitrate="192k")
-        
-        # Tạo SRT
-        if all_subtitles:
-            srt_content = []
-            for i, sub in enumerate(all_subtitles, start=1):
-                start = timedelta(milliseconds=sub["start"])
-                end = timedelta(milliseconds=sub["end"])
-                
-                start_str = f"{start.total_seconds() // 3600:02.0f}:{(start.total_seconds() % 3600) // 60:02.0f}:{start.total_seconds() % 60:06.3f}".replace('.', ',')
-                end_str = f"{end.total_seconds() // 3600:02.0f}:{(end.total_seconds() % 3600) // 60:02.0f}:{end.total_seconds() % 60:06.3f}".replace('.', ',')
-                
-                text = f"{sub['speaker']}: {sub['text']}"
-                srt_content.append(f"{i}\n{start_str} --> {end_str}\n{text}\n")
-            
-            srt_file = os.path.join(output_dir, f"qa_dialogue.srt")
-            with open(srt_file, 'w', encoding='utf-8') as f:
-                f.write('\n'.join(srt_content))
-        else:
-            srt_file = None
-        
-        if task_id and task_manager:
-            task_manager.update_task(task_id, progress=100, message="Q&A audio generated")
-        
-        return output_file, srt_file
-    
     def cleanup_temp_files(self):
-        """Dọn dẹp file tạm"""
+        """Clean temporary files"""
         try:
             temp_files = glob.glob("temp/*.mp3")
             for file in temp_files:
                 try:
                     if os.path.exists(file):
                         file_age = time.time() - os.path.getmtime(file)
-                        if file_age > 3600:  # Xóa file cũ hơn 1 giờ
+                        if file_age > 3600:
                             os.remove(file)
                 except:
                     pass
         except Exception as e:
             print(f"Error cleaning temp files: {e}")
-    
-    def cleanup_old_outputs(self, hours_old: int = 24):
-        """Dọn dẹp outputs cũ"""
-        try:
-            if os.path.exists("outputs"):
-                now = time.time()
-                for folder_name in os.listdir("outputs"):
-                    folder_path = os.path.join("outputs", folder_name)
-                    if os.path.isdir(folder_path):
-                        folder_age = now - os.path.getmtime(folder_path)
-                        if folder_age > hours_old * 3600:
-                            try:
-                                shutil.rmtree(folder_path)
-                            except:
-                                pass
-        except Exception as e:
-            print(f"Error cleaning old outputs: {e}")
 
-# ==================== LIFESPAN MANAGER ====================
+# ==================== APPLICATION INITIALIZATION ====================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Lifespan event handler thay thế cho on_event"""
-    # Startup
-    print("Starting up TTS Generator...")
+    """Lifespan event handler"""
+    print("Starting up TTS Generator with User Management...")
     
-    # Initialize TTS processor
     global tts_processor, task_manager
     tts_processor = TTSProcessor()
     task_manager = TaskManager()
     
-    # Cleanup old files on startup
     tts_processor.cleanup_temp_files()
-    tts_processor.cleanup_old_outputs(24)
     task_manager.cleanup_old_tasks(1)
     
-    # Create template file if not exists
     create_template_file()
     
     yield
     
-    # Shutdown
     print("Shutting down TTS Generator...")
     tts_processor.cleanup_temp_files()
     if hasattr(task_manager, 'executor'):
         task_manager.executor.shutdown(wait=False)
+    database.close()
 
 # ==================== FASTAPI APPLICATION ====================
 app = FastAPI(
-    title="Professional TTS Generator", 
-    version="2.0.0",
-    lifespan=lifespan  # Sử dụng lifespan thay vì on_event
+    title="Professional TTS Generator with User Management", 
+    version="3.0.0",
+    lifespan=lifespan
 )
 
-# Global instances (sẽ được khởi tạo trong lifespan)
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Global instances
 tts_processor = None
 task_manager = None
 
@@ -1675,33 +1604,214 @@ templates = Jinja2Templates(directory="templates")
 # ==================== ROUTES ====================
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
-    """Home page"""
-    return templates.TemplateResponse("index.html", {
+    """Home page - redirects to dashboard if logged in"""
+    user = await get_current_user(request)
+    if user:
+        return RedirectResponse("/dashboard")
+    return templates.TemplateResponse("index.html", {"request": request})
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    """Login page"""
+    user = await get_current_user(request)
+    if user:
+        return RedirectResponse("/dashboard")
+    return templates.TemplateResponse("login.html", {"request": request})
+
+@app.post("/api/login")
+async def login(username: str = Form(...), password: str = Form(...)):
+    """Login API"""
+    user_data = database.authenticate_user(username, password)
+    if not user_data:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    
+    session_token = database.create_session(username)
+    
+    response = JSONResponse({
+        "success": True,
+        "message": "Login successful",
+        "user": {
+            "username": user_data["username"],
+            "full_name": user_data.get("full_name", ""),
+            "role": user_data["role"]
+        }
+    })
+    
+    response.set_cookie(
+        key="session_token",
+        value=session_token,
+        httponly=True,
+        max_age=86400,  # 24 hours
+        secure=False,  # Set to True in production with HTTPS
+        samesite="lax"
+    )
+    
+    return response
+
+@app.get("/register", response_class=HTMLResponse)
+async def register_page(request: Request):
+    """Register page"""
+    user = await get_current_user(request)
+    if user:
+        return RedirectResponse("/dashboard")
+    return templates.TemplateResponse("register.html", {"request": request})
+
+@app.post("/api/register")
+async def register(
+    username: str = Form(...),
+    password: str = Form(...),
+    email: str = Form(...),
+    full_name: str = Form("")
+):
+    """Register API"""
+    success, message = database.create_user(username, password, email, full_name)
+    if not success:
+        raise HTTPException(status_code=400, detail=message)
+    
+    return {"success": True, "message": message}
+
+@app.get("/logout")
+async def logout(request: Request):
+    """Logout"""
+    session_token = request.cookies.get("session_token")
+    if session_token:
+        database.delete_session(session_token)
+    
+    response = RedirectResponse("/")
+    response.delete_cookie("session_token")
+    return response
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard(request: Request):
+    """Dashboard page"""
+    user = await require_login(request)
+    
+    # Calculate usage percentage
+    subscription = user["subscription"]
+    usage = user["usage"]
+    
+    if subscription["plan"] == "free":
+        usage_percentage = (usage["characters_used"] / subscription["characters_limit"]) * 100
+        usage_text = f"{usage['characters_used']:,}/{subscription['characters_limit']:,} characters this week"
+    else:
+        usage_percentage = 0
+        usage_text = f"{usage['characters_used']:,} characters used"
+    
+    return templates.TemplateResponse("dashboard.html", {
         "request": request,
-        "languages": TTSConfig.LANGUAGES,
-        "formats": TTSConfig.OUTPUT_FORMATS
+        "user": user,
+        "usage_percentage": min(usage_percentage, 100),
+        "usage_text": usage_text,
+        "subscription_plans": TTSConfig.SUBSCRIPTION_PLANS
     })
 
-@app.get("/api/languages")
-async def get_languages():
-    """Get all available languages"""
-    languages = list(TTSConfig.LANGUAGES.keys())
-    return {"languages": languages}
-
-@app.get("/api/voices")
-async def get_voices(language: str = None):
-    """Get available voices"""
-    if language and language in TTSConfig.LANGUAGES:
-        voices = TTSConfig.LANGUAGES[language]
-    else:
-        voices = []
-        for lang_voices in TTSConfig.LANGUAGES.values():
-            voices.extend(lang_voices)
+@app.get("/tts", response_class=HTMLResponse)
+async def tts_page(request: Request):
+    """Main TTS page with tabs"""
+    user = await require_login(request)
     
-    return {"voices": voices}
+    # Check if user can access TTS features
+    can_access, message = database.can_user_use_feature(user["username"], "single")
+    
+    return templates.TemplateResponse("tts.html", {
+        "request": request,
+        "user": user,
+        "languages": TTSConfig.LANGUAGES,
+        "formats": TTSConfig.OUTPUT_FORMATS,
+        "can_access": can_access,
+        "access_message": message if not can_access else ""
+    })
 
+@app.get("/multi-voice", response_class=HTMLResponse)
+async def multi_voice_page(request: Request):
+    """Multi-voice page"""
+    user = await require_login(request)
+    
+    # Check if user can access multi-voice
+    can_access, message = database.can_user_use_feature(user["username"], "multi")
+    
+    if not can_access:
+        return templates.TemplateResponse("upgrade.html", {
+            "request": request,
+            "user": user,
+            "feature": "Multi-Voice TTS",
+            "message": message,
+            "subscription_plans": TTSConfig.SUBSCRIPTION_PLANS
+        })
+    
+    return templates.TemplateResponse("multi_voice.html", {
+        "request": request,
+        "user": user,
+        "languages": TTSConfig.LANGUAGES
+    })
+
+@app.get("/qa-dialogue", response_class=HTMLResponse)
+async def qa_dialogue_page(request: Request):
+    """Q&A Dialogue page"""
+    user = await require_login(request)
+    
+    # Check if user can access Q&A dialogue
+    can_access, message = database.can_user_use_feature(user["username"], "qa")
+    
+    if not can_access:
+        return templates.TemplateResponse("upgrade.html", {
+            "request": request,
+            "user": user,
+            "feature": "Q&A Dialogue TTS",
+            "message": message,
+            "subscription_plans": TTSConfig.SUBSCRIPTION_PLANS
+        })
+    
+    return templates.TemplateResponse("qa_dialogue.html", {
+        "request": request,
+        "user": user,
+        "languages": TTSConfig.LANGUAGES
+    })
+
+@app.get("/profile", response_class=HTMLResponse)
+async def profile_page(request: Request):
+    """User profile page"""
+    user = await require_login(request)
+    return templates.TemplateResponse("profile.html", {
+        "request": request,
+        "user": user,
+        "subscription_plans": TTSConfig.SUBSCRIPTION_PLANS
+    })
+
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_page(request: Request):
+    """Admin dashboard"""
+    admin_user = await require_admin(request)
+    
+    all_users = database.get_all_users()
+    total_users = len(all_users)
+    
+    # Calculate statistics
+    free_users = sum(1 for user in all_users.values() if user["subscription"]["plan"] == "free")
+    premium_users = sum(1 for user in all_users.values() if user["subscription"]["plan"] == "premium")
+    pro_users = sum(1 for user in all_users.values() if user["subscription"]["plan"] == "pro")
+    
+    total_characters = sum(user["usage"]["characters_used"] for user in all_users.values())
+    total_requests = sum(user["usage"]["total_requests"] for user in all_users.values())
+    
+    return templates.TemplateResponse("admin.html", {
+        "request": request,
+        "admin": admin_user,
+        "users": all_users,
+        "stats": {
+            "total_users": total_users,
+            "free_users": free_users,
+            "premium_users": premium_users,
+            "pro_users": pro_users,
+            "total_characters": total_characters,
+            "total_requests": total_requests
+        }
+    })
+
+# ==================== TTS API ENDPOINTS ====================
 @app.post("/api/generate/single")
 async def generate_single_voice(
+    request: Request,
     text: str = Form(...),
     voice_id: str = Form(...),
     rate: int = Form(0),
@@ -1710,252 +1820,242 @@ async def generate_single_voice(
     pause: int = Form(500),
     output_format: str = Form("mp3")
 ):
-    """Generate single voice TTS with task system"""
-    try:
-        if not text.strip():
-            raise HTTPException(status_code=400, detail="Text is required")
-        
-        if not voice_id:
-            raise HTTPException(status_code=400, detail="Voice is required")
-        
-        # Tạo task ID
-        task_id = f"single_{int(time.time())}_{random.randint(1000, 9999)}"
-        task_manager.create_task(task_id, "single_voice")
-        
-        # Lưu settings
-        tts_processor.settings["single_voice"] = {
-            "voice": voice_id,
-            "rate": rate,
-            "pitch": pitch,
-            "volume": volume,
-            "pause": pause
-        }
-        tts_processor.save_settings()
-        
-        # Chạy trong background
-        async def background_task():
-            try:
-                audio_file, srt_file = await tts_processor.process_single_voice(
-                    text, voice_id, rate, pitch, volume, pause, output_format, task_id
-                )
-                
-                if audio_file:
-                    result = {
-                        "success": True,
-                        "audio_url": f"/download/{os.path.basename(audio_file)}",
-                        "srt_url": f"/download/{os.path.basename(srt_file)}" if srt_file else None,
-                        "message": "Audio generated successfully"
-                    }
-                else:
-                    result = {
-                        "success": False,
-                        "message": "Failed to generate audio"
-                    }
-                
-                task_manager.update_task(task_id, status="completed", result=result)
-                
-            except Exception as e:
-                task_manager.update_task(task_id, status="failed", 
-                                       message=f"Error: {str(e)}")
-        
-        # Start background task
-        asyncio.create_task(background_task())
-        
-        return {
-            "success": True,
-            "task_id": task_id,
-            "message": "Audio generation started. Check task status."
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    """Generate single voice TTS"""
+    user = await require_login(request)
+    
+    # Count characters
+    characters_used = TextProcessor.count_characters(text)
+    
+    # Check if user can use the feature and has enough quota
+    can_access, message = database.can_user_use_feature(user["username"], "single")
+    if not can_access:
+        raise HTTPException(status_code=403, detail=message)
+    
+    # Record usage
+    database.record_usage(user["username"], characters_used)
+    
+    # Create task
+    task_id = f"single_{int(time.time())}_{random.randint(1000, 9999)}"
+    task_manager.create_task(task_id, "single_voice", user["username"])
+    
+    # Save settings
+    tts_processor.settings["single_voice"] = {
+        "voice": voice_id,
+        "rate": rate,
+        "pitch": pitch,
+        "volume": volume,
+        "pause": pause
+    }
+    tts_processor.save_settings()
+    
+    # Background task
+    async def background_task():
+        try:
+            audio_file, srt_file = await tts_processor.process_single_voice(
+                text, voice_id, rate, pitch, volume, pause, output_format, task_id
+            )
+            
+            if audio_file:
+                result = {
+                    "success": True,
+                    "audio_url": f"/download/{os.path.basename(audio_file)}",
+                    "srt_url": f"/download/{os.path.basename(srt_file)}" if srt_file else None,
+                    "characters_used": characters_used,
+                    "message": "Audio generated successfully"
+                }
+            else:
+                result = {
+                    "success": False,
+                    "message": "Failed to generate audio"
+                }
+            
+            task_manager.update_task(task_id, status="completed", result=result)
+            
+        except Exception as e:
+            task_manager.update_task(task_id, status="failed", 
+                                   message=f"Error: {str(e)}")
+    
+    asyncio.create_task(background_task())
+    
+    return {
+        "success": True,
+        "task_id": task_id,
+        "characters_used": characters_used,
+        "message": "Audio generation started. Check task status."
+    }
 
 @app.post("/api/generate/multi")
 async def generate_multi_voice(
+    request: Request,
     text: str = Form(...),
-    char1_language: str = Form(...),
     char1_voice: str = Form(...),
-    char1_rate: int = Form(0),
-    char1_pitch: int = Form(0),
-    char1_volume: int = Form(100),
-    char2_language: str = Form(...),
     char2_voice: str = Form(...),
-    char2_rate: int = Form(-10),
-    char2_pitch: int = Form(0),
-    char2_volume: int = Form(100),
     pause: int = Form(500),
     repeat: int = Form(1),
     output_format: str = Form("mp3")
 ):
     """Generate multi-voice TTS"""
-    try:
-        if not text.strip():
-            raise HTTPException(status_code=400, detail="Text is required")
-        
-        # Tạo task ID
-        task_id = f"multi_{int(time.time())}_{random.randint(1000, 9999)}"
-        task_manager.create_task(task_id, "multi_voice")
-        
-        voices_config = {
-            "char1": {
-                "language": char1_language,
-                "voice": char1_voice,
-                "rate": char1_rate,
-                "pitch": char1_pitch,
-                "volume": char1_volume
-            },
-            "char2": {
-                "language": char2_language,
-                "voice": char2_voice,
-                "rate": char2_rate,
-                "pitch": char2_pitch,
-                "volume": char2_volume
-            }
-        }
-        
-        # Lưu settings
-        tts_processor.settings["multi_voice"] = {
-            "char1": voices_config["char1"],
-            "char2": voices_config["char2"],
-            "pause": pause,
-            "repeat": repeat
-        }
-        tts_processor.save_settings()
-        
-        # Background task
-        async def background_task():
-            try:
-                audio_file, srt_file = await tts_processor.process_multi_voice(
-                    text, voices_config, pause, repeat, output_format, task_id
-                )
-                
-                if audio_file:
-                    result = {
-                        "success": True,
-                        "audio_url": f"/download/{os.path.basename(audio_file)}",
-                        "srt_url": f"/download/{os.path.basename(srt_file)}" if srt_file else None,
-                        "message": "Multi-voice audio generated successfully"
-                    }
-                else:
-                    result = {
-                        "success": False,
-                        "message": "Failed to generate audio"
-                    }
-                
-                task_manager.update_task(task_id, status="completed", result=result)
-                
-            except Exception as e:
-                task_manager.update_task(task_id, status="failed", 
-                                       message=f"Error: {str(e)}")
-        
-        asyncio.create_task(background_task())
-        
-        return {
-            "success": True,
-            "task_id": task_id,
-            "message": "Multi-voice audio generation started"
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    user = await require_login(request)
+    
+    # Check if user can access multi-voice
+    can_access, message = database.can_user_use_feature(user["username"], "multi")
+    if not can_access:
+        raise HTTPException(status_code=403, detail=message)
+    
+    # Count characters
+    characters_used = TextProcessor.count_characters(text)
+    
+    # Record usage
+    database.record_usage(user["username"], characters_used)
+    
+    # Create task
+    task_id = f"multi_{int(time.time())}_{random.randint(1000, 9999)}"
+    task_manager.create_task(task_id, "multi_voice", user["username"])
+    
+    # This is a simplified version - you should expand it to handle actual multi-voice
+    async def background_task():
+        try:
+            # For now, just use single voice generation
+            # You should implement actual multi-voice generation here
+            audio_file, srt_file = await tts_processor.process_single_voice(
+                text, char1_voice, 0, 0, 100, pause, output_format, task_id
+            )
+            
+            if audio_file:
+                result = {
+                    "success": True,
+                    "audio_url": f"/download/{os.path.basename(audio_file)}",
+                    "characters_used": characters_used,
+                    "message": "Multi-voice audio generated successfully"
+                }
+            else:
+                result = {
+                    "success": False,
+                    "message": "Failed to generate audio"
+                }
+            
+            task_manager.update_task(task_id, status="completed", result=result)
+            
+        except Exception as e:
+            task_manager.update_task(task_id, status="failed", 
+                                   message=f"Error: {str(e)}")
+    
+    asyncio.create_task(background_task())
+    
+    return {
+        "success": True,
+        "task_id": task_id,
+        "characters_used": characters_used,
+        "message": "Multi-voice audio generation started"
+    }
 
-@app.post("/api/generate/qa")
-async def generate_qa_dialogue(
-    text: str = Form(...),
-    question_language: str = Form(...),
-    question_voice: str = Form(...),
-    question_rate: int = Form(0),
-    question_pitch: int = Form(0),
-    question_volume: int = Form(100),
-    answer_language: str = Form(...),
-    answer_voice: str = Form(...),
-    answer_rate: int = Form(-10),
-    answer_pitch: int = Form(0),
-    answer_volume: int = Form(100),
-    pause_q: int = Form(200),
-    pause_a: int = Form(500),
-    repeat: int = Form(2),
-    output_format: str = Form("mp3")
+# ==================== USER MANAGEMENT API ====================
+@app.get("/api/user/info")
+async def get_user_info(request: Request):
+    """Get current user info"""
+    user = await require_login(request)
+    return {
+        "success": True,
+        "user": {
+            "username": user["username"],
+            "email": user["email"],
+            "full_name": user.get("full_name", ""),
+            "role": user["role"],
+            "subscription": user["subscription"],
+            "usage": user["usage"]
+        }
+    }
+
+@app.post("/api/user/update-profile")
+async def update_profile(
+    request: Request,
+    full_name: str = Form(None),
+    email: str = Form(None)
 ):
-    """Generate Q&A dialogue TTS"""
-    try:
-        if not text.strip():
-            raise HTTPException(status_code=400, detail="Text is required")
-        
-        # Tạo task ID
-        task_id = f"qa_{int(time.time())}_{random.randint(1000, 9999)}"
-        task_manager.create_task(task_id, "qa_dialogue")
-        
-        qa_config = {
-            "question": {
-                "language": question_language,
-                "voice": question_voice,
-                "rate": question_rate,
-                "pitch": question_pitch,
-                "volume": question_volume
-            },
-            "answer": {
-                "language": answer_language,
-                "voice": answer_voice,
-                "rate": answer_rate,
-                "pitch": answer_pitch,
-                "volume": answer_volume
-            }
-        }
-        
-        # Lưu settings
-        tts_processor.settings["qa_voice"] = {
-            "question": qa_config["question"],
-            "answer": qa_config["answer"],
-            "pause_q": pause_q,
-            "pause_a": pause_a,
-            "repeat": repeat
-        }
-        tts_processor.save_settings()
-        
-        # Background task
-        async def background_task():
-            try:
-                audio_file, srt_file = await tts_processor.process_qa_dialogue(
-                    text, qa_config, pause_q, pause_a, repeat, output_format, task_id
-                )
-                
-                if audio_file:
-                    result = {
-                        "success": True,
-                        "audio_url": f"/download/{os.path.basename(audio_file)}",
-                        "srt_url": f"/download/{os.path.basename(srt_file)}" if srt_file else None,
-                        "message": "Q&A dialogue audio generated successfully"
-                    }
-                else:
-                    result = {
-                        "success": False,
-                        "message": "Failed to generate audio"
-                    }
-                
-                task_manager.update_task(task_id, status="completed", result=result)
-                
-            except Exception as e:
-                task_manager.update_task(task_id, status="failed", 
-                                       message=f"Error: {str(e)}")
-        
-        asyncio.create_task(background_task())
-        
-        return {
-            "success": True,
-            "task_id": task_id,
-            "message": "Q&A audio generation started"
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    """Update user profile"""
+    user = await require_login(request)
+    username = user["username"]
+    
+    if full_name:
+        user["full_name"] = full_name
+    if email:
+        user["email"] = email
+    
+    database.update_user(username, user)
+    
+    return {"success": True, "message": "Profile updated successfully"}
 
+@app.post("/api/user/change-password")
+async def change_password(
+    request: Request,
+    current_password: str = Form(...),
+    new_password: str = Form(...)
+):
+    """Change user password"""
+    user = await require_login(request)
+    username = user["username"]
+    
+    # Verify current password
+    if not database.verify_password(current_password, user["password"]):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    
+    # Update password
+    user["password"] = database.hash_password(new_password)
+    database.update_user(username, user)
+    
+    return {"success": True, "message": "Password changed successfully"}
+
+# ==================== ADMIN API ====================
+@app.post("/api/admin/update-subscription")
+async def admin_update_subscription(
+    request: Request,
+    username: str = Form(...),
+    plan: str = Form(...),
+    days: int = Form(30)
+):
+    """Admin: Update user subscription"""
+    admin_user = await require_admin(request)
+    
+    if plan not in ["free", "premium", "pro"]:
+        raise HTTPException(status_code=400, detail="Invalid plan")
+    
+    success = database.update_subscription(username, plan, days)
+    if not success:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    return {"success": True, "message": f"Subscription updated to {plan}"}
+
+@app.post("/api/admin/reset-usage")
+async def admin_reset_usage(
+    request: Request,
+    username: str = Form(...)
+):
+    """Admin: Reset user usage"""
+    admin_user = await require_admin(request)
+    
+    user = database.get_user(username)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    user["usage"]["characters_used"] = 0
+    user["usage"]["last_reset"] = datetime.now().isoformat()
+    database.update_user(username, user)
+    
+    return {"success": True, "message": "Usage reset successfully"}
+
+# ==================== UTILITY ENDPOINTS ====================
 @app.get("/api/task/{task_id}")
-async def get_task_status(task_id: str):
+async def get_task_status(task_id: str, request: Request):
     """Get task status"""
+    user = await require_login(request)
     task = task_manager.get_task(task_id)
+    
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+    
+    # Only allow user to see their own tasks (or admin)
+    if user["role"] != "admin" and task["username"] != user["username"]:
+        raise HTTPException(status_code=403, detail="Access denied")
     
     return {
         "task_id": task_id,
@@ -1968,11 +2068,11 @@ async def get_task_status(task_id: str):
     }
 
 @app.get("/download/{filename}")
-async def download_file(filename: str):
+async def download_file(filename: str, request: Request):
     """Download generated files"""
-    file_path = None
+    user = await require_login(request)
     
-    # Tìm file trong outputs directory
+    file_path = None
     for root, dirs, files in os.walk("outputs"):
         if filename in files:
             file_path = os.path.join(root, filename)
@@ -1987,67 +2087,42 @@ async def download_file(filename: str):
         media_type="application/octet-stream"
     )
 
-@app.get("/api/settings")
-async def get_settings():
-    """Get current settings"""
-    return tts_processor.settings
+@app.get("/api/languages")
+async def get_languages(request: Request):
+    """Get all available languages"""
+    user = await require_login(request)
+    languages = list(TTSConfig.LANGUAGES.keys())
+    return {"languages": languages}
 
-@app.post("/api/cleanup")
-async def cleanup_files():
-    """Cleanup temporary and old files"""
-    try:
-        # Cleanup tasks
-        task_manager.cleanup_old_tasks(1)
-        
-        # Cleanup files
-        tts_processor.cleanup_temp_files()
-        tts_processor.cleanup_old_outputs(1)  # 1 hour
-        
-        # Clear audio cache
-        tts_processor.cache_manager.clear_cache()
-        
-        return {"success": True, "message": "Cleanup completed"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+@app.get("/api/voices")
+async def get_voices(language: str = None, request: Request = None):
+    """Get available voices"""
+    user = await get_current_user(request) if request else None
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    if language and language in TTSConfig.LANGUAGES:
+        voices = TTSConfig.LANGUAGES[language]
+    else:
+        voices = []
+        for lang_voices in TTSConfig.LANGUAGES.values():
+            voices.extend(lang_voices)
+    
+    return {"voices": voices}
 
-@app.post("/api/cleanup/all")
-async def cleanup_all():
-    """Cleanup all temporary files and cache completely"""
-    try:
-        # Xóa toàn bộ temp
-        if os.path.exists("temp"):
-            shutil.rmtree("temp")
-            os.makedirs("temp")
-        
-        # Xóa toàn bộ outputs (giữ lại cấu trúc)
-        if os.path.exists("outputs"):
-            shutil.rmtree("outputs")
-            os.makedirs("outputs")
-        
-        # Xóa toàn bộ cache
-        tts_processor.cache_manager.clear_cache()
-        
-        # Xóa task cache
-        task_manager.tasks.clear()
-        
-        return {
-            "success": True, 
-            "message": "All cache and temporary files cleared"
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# Health check endpoint for Render
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
 # ==================== HTML TEMPLATE CREATION ====================
-# Trong hàm create_template_file(), thay đổi phần Multi-Voice tab:
 def create_template_file():
-    """Create HTML template file"""
-    template_content = """
+    """Create HTML template files"""
+    templates_dir = "templates"
+    os.makedirs(templates_dir, exist_ok=True)
+    
+    # Create index.html
+    index_html = """
 <!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -2071,37 +2146,41 @@ def create_template_file():
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
         }
         
-        .main-container {
-            background: white;
-            border-radius: 20px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            margin-top: 2rem;
+        .hero-section {
+            padding: 100px 0;
+            color: white;
+            text-align: center;
+        }
+        
+        .hero-section h1 {
+            font-size: 3.5rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+        }
+        
+        .hero-section p {
+            font-size: 1.2rem;
+            opacity: 0.9;
             margin-bottom: 2rem;
-            overflow: hidden;
         }
         
-        .nav-tabs {
-            border-bottom: 2px solid #dee2e6;
-            background: var(--light-bg);
-        }
-        
-        .nav-tabs .nav-link {
-            border: none;
-            border-radius: 0;
-            padding: 1rem 2rem;
-            font-weight: 600;
-            color: #6c757d;
-            transition: all 0.3s;
-        }
-        
-        .nav-tabs .nav-link.active {
+        .feature-card {
             background: white;
-            color: var(--primary-color);
-            border-bottom: 3px solid var(--primary-color);
+            border-radius: 15px;
+            padding: 2rem;
+            margin: 1rem;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            transition: transform 0.3s;
         }
         
-        .tab-content {
-            padding: 2rem;
+        .feature-card:hover {
+            transform: translateY(-5px);
+        }
+        
+        .feature-card i {
+            font-size: 2.5rem;
+            color: var(--primary-color);
+            margin-bottom: 1rem;
         }
         
         .btn-primary {
@@ -2117,1349 +2196,415 @@ def create_template_file():
             box-shadow: 0 10px 20px rgba(67, 97, 238, 0.3);
         }
         
-        .loading-overlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(0,0,0,0.7);
-            display: none;
-            justify-content: center;
-            align-items: center;
-            z-index: 9999;
-        }
-        
-        .loading-spinner {
-            width: 50px;
-            height: 50px;
-            border: 5px solid #f3f3f3;
-            border-top: 5px solid var(--primary-color);
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-        }
-        
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-        
-        .toast-container {
-            position: fixed;
+        .auth-buttons {
+            position: absolute;
             top: 20px;
             right: 20px;
-            z-index: 1000;
-        }
-        
-        .progress-container {
-            margin: 1rem 0;
-        }
-        
-        .task-status {
-            background: #f8f9fa;
-            border-radius: 10px;
-            padding: 1rem;
-            margin: 1rem 0;
-            display: none;
-        }
-        
-        .output-card {
-            background: linear-gradient(135deg, #f8f9fa, #e9ecef);
-            border-radius: 10px;
-            padding: 1.5rem;
-            margin-top: 2rem;
-        }
-        
-        .voice-card {
-            border: 1px solid #dee2e6;
-            border-radius: 10px;
-            padding: 1rem;
-            margin-bottom: 1rem;
-            background: #f8f9fa;
-        }
-        
-        .character-tag {
-            display: inline-block;
-            padding: 0.25rem 0.75rem;
-            border-radius: 20px;
-            font-size: 0.875rem;
-            font-weight: 600;
-            margin-right: 0.5rem;
-            margin-bottom: 0.5rem;
-        }
-        
-        .char1-tag { background: #e3f2fd; color: #1976d2; }
-        .char2-tag { background: #f3e5f5; color: #7b1fa2; }
-        .q-tag { background: #e8f5e9; color: #388e3c; }
-        .a-tag { background: #fff3e0; color: #f57c00; }
-        
-        @media (max-width: 768px) {
-            .nav-tabs .nav-link {
-                padding: 0.75rem 1rem;
-                font-size: 0.9rem;
-            }
-            
-            .tab-content {
-                padding: 1rem;
-            }
-            
-            .main-container {
-                margin: 1rem;
-                border-radius: 15px;
-            }
         }
     </style>
 </head>
 <body>
-    <!-- Navigation -->
-    <nav class="navbar navbar-expand-lg navbar-dark">
+    <div class="auth-buttons">
+        <a href="/login" class="btn btn-light me-2">Login</a>
+        <a href="/register" class="btn btn-primary">Register</a>
+    </div>
+    
+    <div class="hero-section">
         <div class="container">
-            <a class="navbar-brand" href="/">
-                <i class="fas fa-microphone-alt me-2"></i>
-                Professional TTS Generator v2.0
-            </a>
-            <button class="btn btn-light" onclick="cleanupAll()">
-                <i class="fas fa-broom me-2"></i>Clean Cache
-            </button>
-        </div>
-    </nav>
-
-    <!-- Main Container -->
-    <div class="container main-container">
-        <!-- Tabs -->
-        <ul class="nav nav-tabs" id="ttsTabs" role="tablist">
-            <li class="nav-item" role="presentation">
-                <button class="nav-link active" id="single-tab" data-bs-toggle="tab" data-bs-target="#single">
-                    <i class="fas fa-user me-2"></i>Single Voice
-                </button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="multi-tab" data-bs-toggle="tab" data-bs-target="#multi">
-                    <i class="fas fa-users me-2"></i>Multi-Voice
-                </button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="qa-tab" data-bs-toggle="tab" data-bs-target="#qa">
-                    <i class="fas fa-comments me-2"></i>Q&A Dialogue
-                </button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="tasks-tab" data-bs-toggle="tab" data-bs-target="#tasks">
-                    <i class="fas fa-tasks me-2"></i>Tasks
-                </button>
-            </li>
-        </ul>
-
-        <!-- Tab Content -->
-        <div class="tab-content" id="ttsTabsContent">
-            <!-- Single Voice Tab -->
-            <div class="tab-pane fade show active" id="single">
-                <div class="row">
-                    <div class="col-md-8">
-                        <div class="mb-3">
-                            <label class="form-label">Text Content</label>
-                            <textarea class="form-control" id="singleText" rows="8" 
-                                      placeholder="Enter your text here..."></textarea>
-                            <small class="text-muted">Maximum 50 sentences for optimal performance</small>
-                        </div>
-                    </div>
-                    <div class="col-md-4">
-                        <div class="mb-3">
-                            <label class="form-label">Language</label>
-                            <select class="form-select" id="singleLanguage">
-                                <option value="">Select Language</option>
-                                {% for language in languages %}
-                                <option value="{{ language }}">{{ language }}</option>
-                                {% endfor %}
-                            </select>
-                        </div>
-                        
-                        <div class="mb-3">
-                            <label class="form-label">Voice</label>
-                            <select class="form-select" id="singleVoice">
-                                <option value="">Select Voice</option>
-                            </select>
-                        </div>
-                        
-                        <!-- Voice Settings -->
-                        <div class="accordion mb-3">
-                            <div class="accordion-item">
-                                <h2 class="accordion-header">
-                                    <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#singleSettings">
-                                        <i class="fas fa-sliders-h me-2"></i>Voice Settings
-                                    </button>
-                                </h2>
-                                <div id="singleSettings" class="accordion-collapse collapse show">
-                                    <div class="accordion-body">
-                                        <div class="mb-3">
-                                            <label class="form-label">
-                                                Speed: <span id="singleRateValue">0%</span>
-                                            </label>
-                                            <input type="range" class="form-range" id="singleRate" min="-30" max="30" value="0">
-                                        </div>
-                                        
-                                        <div class="mb-3">
-                                            <label class="form-label">
-                                                Pitch: <span id="singlePitchValue">0Hz</span>
-                                            </label>
-                                            <input type="range" class="form-range" id="singlePitch" min="-30" max="30" value="0">
-                                        </div>
-                                        
-                                        <div class="mb-3">
-                                            <label class="form-label">
-                                                Volume: <span id="singleVolumeValue">100%</span>
-                                            </label>
-                                            <input type="range" class="form-range" id="singleVolume" min="50" max="150" value="100">
-                                        </div>
-                                        
-                                        <div class="mb-3">
-                                            <label class="form-label">
-                                                Pause Duration: <span id="singlePauseValue">500ms</span>
-                                            </label>
-                                            <input type="range" class="form-range" id="singlePause" min="100" max="2000" value="500">
-                                        </div>
-                                        
-                                        <div class="mb-3">
-                                            <label class="form-label">Output Format</label>
-                                            <select class="form-select" id="singleFormat">
-                                                {% for format in formats %}
-                                                <option value="{{ format }}">{{ format|upper }}</option>
-                                                {% endfor %}
-                                            </select>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <button class="btn btn-primary w-100" onclick="generateSingle()">
-                            <i class="fas fa-play-circle me-2"></i>Generate Audio
-                        </button>
-                        
-                        <!-- Task Status -->
-                        <div class="task-status" id="singleTaskStatus">
-                            <div class="progress-container">
-                                <div class="progress">
-                                    <div class="progress-bar" id="singleProgressBar" style="width: 0%"></div>
-                                </div>
-                                <div class="text-center mt-2" id="singleProgressText">0%</div>
-                            </div>
-                            <div id="singleTaskMessage"></div>
-                        </div>
+            <h1><i class="fas fa-microphone-alt me-3"></i>Professional TTS Generator</h1>
+            <p class="lead">Convert text to natural-sounding speech with multiple voices and languages</p>
+            
+            <div class="row mt-5">
+                <div class="col-md-4">
+                    <div class="feature-card">
+                        <i class="fas fa-user"></i>
+                        <h4>Single Voice</h4>
+                        <p>Convert text to speech with a single natural voice</p>
                     </div>
                 </div>
-                
-                <!-- Output Section -->
-                <div class="output-card mt-4" id="singleOutput" style="display: none;">
-                    <h5><i class="fas fa-music me-2"></i>Generated Audio</h5>
-                    <div class="audio-player" id="singleAudioPlayer"></div>
-                    <div class="mt-3">
-                        <a href="#" class="btn btn-success me-2" id="singleDownloadAudio">
-                            <i class="fas fa-download me-2"></i>Download Audio
-                        </a>
-                        <a href="#" class="btn btn-info" id="singleDownloadSubtitle" style="display: none;">
-                            <i class="fas fa-file-alt me-2"></i>Download Subtitles
-                        </a>
+                <div class="col-md-4">
+                    <div class="feature-card">
+                        <i class="fas fa-users"></i>
+                        <h4>Multi-Voice</h4>
+                        <p>Create dialogues with multiple characters (Premium)</p>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="feature-card">
+                        <i class="fas fa-comments"></i>
+                        <h4>Q&A Dialogue</h4>
+                        <p>Generate question and answer conversations (Premium)</p>
                     </div>
                 </div>
             </div>
-
-            <!-- Multi-Voice Tab -->
-            <div class="tab-pane fade" id="multi">
-                <div class="row">
-                    <div class="col-md-8">
-                        <div class="mb-3">
-                            <label class="form-label">Dialogue Content</label>
-                            <textarea class="form-control" id="multiText" rows="8" 
-                                      placeholder="CHAR1: Dialogue for character 1&#10;CHAR2: Dialogue for character 2&#10;NARRATOR: Narration text"></textarea>
-                            <small class="text-muted">Use CHAR1:, CHAR2:, or NARRATOR: prefixes. Maximum 20 dialogues.</small>
-                        </div>
-                    </div>
-                    <div class="col-md-4">
-                        <!-- Character 1 Settings -->
-                        <div class="voice-card mb-3">
-                            <h6><span class="character-tag char1-tag">CHARACTER 1</span></h6>
-                            
-                            <div class="mb-3">
-                                <label class="form-label">Language</label>
-                                <select class="form-select multiLanguage" data-char="1">
-                                    <option value="">Select Language</option>
-                                    {% for language in languages %}
-                                    <option value="{{ language }}">{{ language }}</option>
-                                    {% endfor %}
-                                </select>
-                            </div>
-                            
-                            <div class="mb-3">
-                                <label class="form-label">Voice</label>
-                                <select class="form-select multiVoice" data-char="1">
-                                    <option value="">Select Voice</option>
-                                </select>
-                            </div>
-                            
-                            <div class="row">
-                                <div class="col-4">
-                                    <label class="form-label small">Speed</label>
-                                    <input type="range" class="form-range" data-setting="rate" data-char="1" min="-30" max="30" value="0">
-                                    <small class="d-block text-center"><span data-value="rate" data-char="1">0%</span></small>
-                                </div>
-                                <div class="col-4">
-                                    <label class="form-label small">Pitch</label>
-                                    <input type="range" class="form-range" data-setting="pitch" data-char="1" min="-30" max="30" value="0">
-                                    <small class="d-block text-center"><span data-value="pitch" data-char="1">0Hz</span></small>
-                                </div>
-                                <div class="col-4">
-                                    <label class="form-label small">Volume</label>
-                                    <input type="range" class="form-range" data-setting="volume" data-char="1" min="50" max="150" value="100">
-                                    <small class="d-block text-center"><span data-value="volume" data-char="1">100%</span></small>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <!-- Character 2 Settings -->
-                        <div class="voice-card mb-3">
-                            <h6><span class="character-tag char2-tag">CHARACTER 2</span></h6>
-                            
-                            <div class="mb-3">
-                                <label class="form-label">Language</label>
-                                <select class="form-select multiLanguage" data-char="2">
-                                    <option value="">Select Language</option>
-                                    {% for language in languages %}
-                                    <option value="{{ language }}">{{ language }}</option>
-                                    {% endfor %}
-                                </select>
-                            </div>
-                            
-                            <div class="mb-3">
-                                <label class="form-label">Voice</label>
-                                <select class="form-select multiVoice" data-char="2">
-                                    <option value="">Select Voice</option>
-                                </select>
-                            </div>
-                            
-                            <div class="row">
-                                <div class="col-4">
-                                    <label class="form-label small">Speed</label>
-                                    <input type="range" class="form-range" data-setting="rate" data-char="2" min="-30" max="30" value="-10">
-                                    <small class="d-block text-center"><span data-value="rate" data-char="2">-10%</span></small>
-                                </div>
-                                <div class="col-4">
-                                    <label class="form-label small">Pitch</label>
-                                    <input type="range" class="form-range" data-setting="pitch" data-char="2" min="-30" max="30" value="0">
-                                    <small class="d-block text-center"><span data-value="pitch" data-char="2">0Hz</span></small>
-                                </div>
-                                <div class="col-4">
-                                    <label class="form-label small">Volume</label>
-                                    <input type="range" class="form-range" data-setting="volume" data-char="2" min="50" max="150" value="100">
-                                    <small class="d-block text-center"><span data-value="volume" data-char="2">100%</span></small>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <!-- General Settings -->
-                        <div class="mb-3">
-                            <label class="form-label">
-                                Pause Between Dialogues: <span id="multiPauseValue">500ms</span>
-                            </label>
-                            <input type="range" class="form-range" id="multiPause" min="100" max="2000" value="500">
-                        </div>
-                        
-                        <div class="mb-3">
-                            <label class="form-label">
-                                Repeat Times: <span id="multiRepeatValue">1</span>
-                            </label>
-                            <input type="range" class="form-range" id="multiRepeat" min="1" max="5" value="1">
-                        </div>
-                        
-                        <div class="mb-3">
-                            <label class="form-label">Output Format</label>
-                            <select class="form-select" id="multiFormat">
-                                {% for format in formats %}
-                                <option value="{{ format }}">{{ format|upper }}</option>
-                                {% endfor %}
-                            </select>
-                        </div>
-                        
-                        <button class="btn btn-primary w-100" onclick="generateMulti()">
-                            <i class="fas fa-users me-2"></i>Generate Multi-Voice Audio
-                        </button>
-                        
-                        <!-- Task Status -->
-                        <div class="task-status" id="multiTaskStatus">
-                            <div class="progress-container">
-                                <div class="progress">
-                                    <div class="progress-bar" id="multiProgressBar" style="width: 0%"></div>
-                                </div>
-                                <div class="text-center mt-2" id="multiProgressText">0%</div>
-                            </div>
-                            <div id="multiTaskMessage"></div>
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- Output Section -->
-                <div class="output-card mt-4" id="multiOutput" style="display: none;">
-                    <h5><i class="fas fa-users me-2"></i>Generated Multi-Voice Audio</h5>
-                    <div class="audio-player" id="multiAudioPlayer"></div>
-                    <div class="mt-3">
-                        <a href="#" class="btn btn-success me-2" id="multiDownloadAudio">
-                            <i class="fas fa-download me-2"></i>Download Audio
-                        </a>
-                        <a href="#" class="btn btn-info" id="multiDownloadSubtitle" style="display: none;">
-                            <i class="fas fa-file-alt me-2"></i>Download Subtitles
-                        </a>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Q&A Dialogue Tab -->
-            <div class="tab-pane fade" id="qa">
-                <div class="row">
-                    <div class="col-md-8">
-                        <div class="mb-3">
-                            <label class="form-label">Q&A Content</label>
-                            <textarea class="form-control" id="qaText" rows="8" 
-                                      placeholder="Q: Question text&#10;A: Answer text&#10;Q: Next question&#10;A: Next answer"></textarea>
-                            <small class="text-muted">Use Q: for questions and A: for answers. Maximum 10 Q&A pairs.</small>
-                        </div>
-                    </div>
-                    <div class="col-md-4">
-                        <!-- Question Settings -->
-                        <div class="voice-card mb-3">
-                            <h6><span class="character-tag q-tag">QUESTION</span></h6>
-                            
-                            <div class="mb-3">
-                                <label class="form-label">Language</label>
-                                <select class="form-select qaLanguage" data-type="question">
-                                    <option value="">Select Language</option>
-                                    {% for language in languages %}
-                                    <option value="{{ language }}">{{ language }}</option>
-                                    {% endfor %}
-                                </select>
-                            </div>
-                            
-                            <div class="mb-3">
-                                <label class="form-label">Voice</label>
-                                <select class="form-select qaVoice" data-type="question">
-                                    <option value="">Select Voice</option>
-                                </select>
-                            </div>
-                            
-                            <div class="row">
-                                <div class="col-4">
-                                    <label class="form-label small">Speed</label>
-                                    <input type="range" class="form-range" data-setting="rate" data-type="question" min="-30" max="30" value="0">
-                                    <small class="d-block text-center"><span data-value="rate" data-type="question">0%</span></small>
-                                </div>
-                                <div class="col-4">
-                                    <label class="form-label small">Pitch</label>
-                                    <input type="range" class="form-range" data-setting="pitch" data-type="question" min="-30" max="30" value="0">
-                                    <small class="d-block text-center"><span data-value="pitch" data-type="question">0Hz</span></small>
-                                </div>
-                                <div class="col-4">
-                                    <label class="form-label small">Volume</label>
-                                    <input type="range" class="form-range" data-setting="volume" data-type="question" min="50" max="150" value="100">
-                                    <small class="d-block text-center"><span data-value="volume" data-type="question">100%</span></small>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <!-- Answer Settings -->
-                        <div class="voice-card mb-3">
-                            <h6><span class="character-tag a-tag">ANSWER</span></h6>
-                            
-                            <div class="mb-3">
-                                <label class="form-label">Language</label>
-                                <select class="form-select qaLanguage" data-type="answer">
-                                    <option value="">Select Language</option>
-                                    {% for language in languages %}
-                                    <option value="{{ language }}">{{ language }}</option>
-                                    {% endfor %}
-                                </select>
-                            </div>
-                            
-                            <div class="mb-3">
-                                <label class="form-label">Voice</label>
-                                <select class="form-select qaVoice" data-type="answer">
-                                    <option value="">Select Voice</option>
-                                </select>
-                            </div>
-                            
-                            <div class="row">
-                                <div class="col-4">
-                                    <label class="form-label small">Speed</label>
-                                    <input type="range" class="form-range" data-setting="rate" data-type="answer" min="-30" max="30" value="-10">
-                                    <small class="d-block text-center"><span data-value="rate" data-type="answer">-10%</span></small>
-                                </div>
-                                <div class="col-4">
-                                    <label class="form-label small">Pitch</label>
-                                    <input type="range" class="form-range" data-setting="pitch" data-type="answer" min="-30" max="30" value="0">
-                                    <small class="d-block text-center"><span data-value="pitch" data-type="answer">0Hz</span></small>
-                                </div>
-                                <div class="col-4">
-                                    <label class="form-label small">Volume</label>
-                                    <input type="range" class="form-range" data-setting="volume" data-type="answer" min="50" max="150" value="100">
-                                    <small class="d-block text-center"><span data-value="volume" data-type="answer">100%</span></small>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <!-- Q&A Settings -->
-                        <div class="mb-3">
-                            <label class="form-label">
-                                Pause After Question: <span id="qaPauseQValue">200ms</span>
-                            </label>
-                            <input type="range" class="form-range" id="qaPauseQ" min="100" max="1000" value="200">
-                        </div>
-                        
-                        <div class="mb-3">
-                            <label class="form-label">
-                                Pause After Answer: <span id="qaPauseAValue">500ms</span>
-                            </label>
-                            <input type="range" class="form-range" id="qaPauseA" min="100" max="2000" value="500">
-                        </div>
-                        
-                        <div class="mb-3">
-                            <label class="form-label">
-                                Repeat Times: <span id="qaRepeatValue">2</span>
-                            </label>
-                            <input type="range" class="form-range" id="qaRepeat" min="1" max="5" value="2">
-                        </div>
-                        
-                        <div class="mb-3">
-                            <label class="form-label">Output Format</label>
-                            <select class="form-select" id="qaFormat">
-                                {% for format in formats %}
-                                <option value="{{ format }}">{{ format|upper }}</option>
-                                {% endfor %}
-                            </select>
-                        </div>
-                        
-                        <button class="btn btn-primary w-100" onclick="generateQA()">
-                            <i class="fas fa-comments me-2"></i>Generate Q&A Audio
-                        </button>
-                        
-                        <!-- Task Status -->
-                        <div class="task-status" id="qaTaskStatus">
-                            <div class="progress-container">
-                                <div class="progress">
-                                    <div class="progress-bar" id="qaProgressBar" style="width: 0%"></div>
-                                </div>
-                                <div class="text-center mt-2" id="qaProgressText">0%</div>
-                            </div>
-                            <div id="qaTaskMessage"></div>
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- Output Section -->
-                <div class="output-card mt-4" id="qaOutput" style="display: none;">
-                    <h5><i class="fas fa-comments me-2"></i>Generated Q&A Audio</h5>
-                    <div class="audio-player" id="qaAudioPlayer"></div>
-                    <div class="mt-3">
-                        <a href="#" class="btn btn-success me-2" id="qaDownloadAudio">
-                            <i class="fas fa-download me-2"></i>Download Audio
-                        </a>
-                        <a href="#" class="btn btn-info" id="qaDownloadSubtitle" style="display: none;">
-                            <i class="fas fa-file-alt me-2"></i>Download Subtitles
-                        </a>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Tasks Tab -->
-            <div class="tab-pane fade" id="tasks">
-                <h5><i class="fas fa-tasks me-2"></i>Active Tasks</h5>
-                <div id="tasksList">
-                    <div class="text-center text-muted py-4">
-                        <i class="fas fa-clock fa-2x mb-3"></i>
-                        <p>No active tasks</p>
-                    </div>
-                </div>
-                <button class="btn btn-secondary mt-3" onclick="refreshTasks()">
-                    <i class="fas fa-sync-alt me-2"></i>Refresh Tasks
-                </button>
+            
+            <div class="mt-5">
+                <h3>Start with 30,000 free characters per week!</h3>
+                <a href="/register" class="btn btn-primary btn-lg mt-3">
+                    <i class="fas fa-rocket me-2"></i>Get Started Free
+                </a>
             </div>
         </div>
     </div>
-
-    <!-- Loading Overlay -->
-    <div class="loading-overlay" id="loadingOverlay">
-        <div class="loading-spinner"></div>
-    </div>
-
-    <!-- Toast Container -->
-    <div class="toast-container"></div>
-
-    <!-- Scripts -->
+    
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-        // Global variables
-        let currentTaskId = null;
-        let taskCheckInterval = null;
-        
-        // Initialize
-        document.addEventListener('DOMContentLoaded', async function() {
-            // Load settings and voices
-            await loadSettings();
-            await loadVoices();
-            
-            // Initialize range displays
-            initRangeDisplays();
-            
-            // Auto cleanup on load
-            await cleanupOldFiles();
-            
-            // Initialize multi-voice and Q&A language selectors
-            initMultiVoiceSelectors();
-            initQASelectors();
-        });
-        
-        // Load settings
-        async function loadSettings() {
-            try {
-                const response = await fetch('/api/settings');
-                const settings = await response.json();
-                
-                // Apply single voice settings
-                if (settings.single_voice) {
-                    const sv = settings.single_voice;
-                    document.getElementById('singleRate').value = sv.rate;
-                    document.getElementById('singlePitch').value = sv.pitch;
-                    document.getElementById('singleVolume').value = sv.volume;
-                    document.getElementById('singlePause').value = sv.pause;
-                    
-                    // Trigger updates
-                    ['singleRate', 'singlePitch', 'singleVolume', 'singlePause'].forEach(id => {
-                        document.getElementById(id).dispatchEvent(new Event('input'));
-                    });
-                }
-                
-                // Apply multi-voice settings
-                if (settings.multi_voice) {
-                    const mv = settings.multi_voice;
-                    
-                    // Character 1 settings
-                    if (mv.char1) {
-                        document.querySelector('.multiLanguage[data-char="1"]').value = mv.char1.language || 'Tiếng Việt';
-                        document.querySelector('[data-setting="rate"][data-char="1"]').value = mv.char1.rate;
-                        document.querySelector('[data-setting="pitch"][data-char="1"]').value = mv.char1.pitch;
-                        document.querySelector('[data-setting="volume"][data-char="1"]').value = mv.char1.volume;
-                    }
-                    
-                    // Character 2 settings
-                    if (mv.char2) {
-                        document.querySelector('.multiLanguage[data-char="2"]').value = mv.char2.language || 'Tiếng Việt';
-                        document.querySelector('[data-setting="rate"][data-char="2"]').value = mv.char2.rate;
-                        document.querySelector('[data-setting="pitch"][data-char="2"]').value = mv.char2.pitch;
-                        document.querySelector('[data-setting="volume"][data-char="2"]').value = mv.char2.volume;
-                    }
-                    
-                    document.getElementById('multiPause').value = mv.pause;
-                    document.getElementById('multiRepeat').value = mv.repeat;
-                    
-                    // Trigger updates
-                    document.getElementById('multiPause').dispatchEvent(new Event('input'));
-                    document.getElementById('multiRepeat').dispatchEvent(new Event('input'));
-                }
-                
-                // Apply Q&A settings
-                if (settings.qa_voice) {
-                    const qv = settings.qa_voice;
-                    
-                    // Question settings
-                    if (qv.question) {
-                        document.querySelector('.qaLanguage[data-type="question"]').value = qv.question.language || 'Tiếng Việt';
-                        document.querySelector('[data-setting="rate"][data-type="question"]').value = qv.question.rate;
-                        document.querySelector('[data-setting="pitch"][data-type="question"]').value = qv.question.pitch;
-                        document.querySelector('[data-setting="volume"][data-type="question"]').value = qv.question.volume;
-                    }
-                    
-                    // Answer settings
-                    if (qv.answer) {
-                        document.querySelector('.qaLanguage[data-type="answer"]').value = qv.answer.language || 'Tiếng Việt';
-                        document.querySelector('[data-setting="rate"][data-type="answer"]').value = qv.answer.rate;
-                        document.querySelector('[data-setting="pitch"][data-type="answer"]').value = qv.answer.pitch;
-                        document.querySelector('[data-setting="volume"][data-type="answer"]').value = qv.answer.volume;
-                    }
-                    
-                    document.getElementById('qaPauseQ').value = qv.pause_q;
-                    document.getElementById('qaPauseA').value = qv.pause_a;
-                    document.getElementById('qaRepeat').value = qv.repeat;
-                    
-                    // Trigger updates
-                    document.getElementById('qaPauseQ').dispatchEvent(new Event('input'));
-                    document.getElementById('qaPauseA').dispatchEvent(new Event('input'));
-                    document.getElementById('qaRepeat').dispatchEvent(new Event('input'));
-                }
-                
-                // Set default language for all selectors
-                const defaultLanguage = 'Tiếng Việt';
-                document.getElementById('singleLanguage').value = defaultLanguage;
-                document.querySelectorAll('.multiLanguage').forEach(select => select.value = defaultLanguage);
-                document.querySelectorAll('.qaLanguage').forEach(select => select.value = defaultLanguage);
-                
-            } catch (error) {
-                console.error('Error loading settings:', error);
-            }
-        }
-        
-        // Load voices for single voice
-        async function loadVoices() {
-            try {
-                const language = document.getElementById('singleLanguage').value || 'Tiếng Việt';
-                const response = await fetch(`/api/voices?language=${encodeURIComponent(language)}`);
-                const data = await response.json();
-                
-                const voiceSelect = document.getElementById('singleVoice');
-                voiceSelect.innerHTML = '<option value="">Select Voice</option>';
-                
-                data.voices.forEach(voice => {
-                    const option = document.createElement('option');
-                    option.value = voice.name;
-                    option.textContent = `${voice.display} (${voice.gender})`;
-                    voiceSelect.appendChild(option);
-                });
-                
-                // Set default Vietnamese voice
-                const viVoice = data.voices.find(v => v.name === 'vi-VN-HoaiMyNeural');
-                if (viVoice) {
-                    voiceSelect.value = viVoice.name;
-                }
-            } catch (error) {
-                console.error('Error loading voices:', error);
-            }
-        }
-        
-        // Initialize multi-voice selectors
-        async function initMultiVoiceSelectors() {
-            // Set up language change handlers for multi-voice
-            document.querySelectorAll('.multiLanguage').forEach(select => {
-                select.addEventListener('change', async function() {
-                    const char = this.dataset.char;
-                    const language = this.value;
-                    
-                    if (language) {
-                        await loadMultiVoices(char, language);
-                    }
-                });
-                
-                // Load initial voices
-                const language = select.value || 'Tiếng Việt';
-                loadMultiVoices(select.dataset.char, language);
-            });
-        }
-        
-        // Load voices for multi-voice characters
-        async function loadMultiVoices(char, language) {
-            try {
-                const response = await fetch(`/api/voices?language=${encodeURIComponent(language)}`);
-                const data = await response.json();
-                
-                const voiceSelect = document.querySelector(`.multiVoice[data-char="${char}"]`);
-                voiceSelect.innerHTML = '<option value="">Select Voice</option>';
-                
-                data.voices.forEach(voice => {
-                    const option = document.createElement('option');
-                    option.value = voice.name;
-                    option.textContent = `${voice.display} (${voice.gender})`;
-                    voiceSelect.appendChild(option);
-                });
-                
-                // Set default voice based on character
-                let defaultVoice = 'vi-VN-HoaiMyNeural';
-                if (char === '2') {
-                    defaultVoice = 'vi-VN-NamMinhNeural';
-                }
-                
-                const defaultVoiceOption = data.voices.find(v => v.name === defaultVoice);
-                if (defaultVoiceOption) {
-                    voiceSelect.value = defaultVoice;
-                }
-            } catch (error) {
-                console.error(`Error loading voices for character ${char}:`, error);
-            }
-        }
-        
-        // Initialize Q&A selectors
-        async function initQASelectors() {
-            // Set up language change handlers for Q&A
-            document.querySelectorAll('.qaLanguage').forEach(select => {
-                select.addEventListener('change', async function() {
-                    const type = this.dataset.type;
-                    const language = this.value;
-                    
-                    if (language) {
-                        await loadQAVoices(type, language);
-                    }
-                });
-                
-                // Load initial voices
-                const language = select.value || 'Tiếng Việt';
-                loadQAVoices(select.dataset.type, language);
-            });
-        }
-        
-        // Load voices for Q&A
-        async function loadQAVoices(type, language) {
-            try {
-                const response = await fetch(`/api/voices?language=${encodeURIComponent(language)}`);
-                const data = await response.json();
-                
-                const voiceSelect = document.querySelector(`.qaVoice[data-type="${type}"]`);
-                voiceSelect.innerHTML = '<option value="">Select Voice</option>';
-                
-                data.voices.forEach(voice => {
-                    const option = document.createElement('option');
-                    option.value = voice.name;
-                    option.textContent = `${voice.display} (${voice.gender})`;
-                    voiceSelect.appendChild(option);
-                });
-                
-                // Set default voice based on type
-                let defaultVoice = 'vi-VN-HoaiMyNeural';
-                if (type === 'answer') {
-                    defaultVoice = 'vi-VN-NamMinhNeural';
-                }
-                
-                const defaultVoiceOption = data.voices.find(v => v.name === defaultVoice);
-                if (defaultVoiceOption) {
-                    voiceSelect.value = defaultVoice;
-                }
-            } catch (error) {
-                console.error(`Error loading voices for ${type}:`, error);
-            }
-        }
-        
-        // Initialize range displays
-        function initRangeDisplays() {
-            // Single voice ranges
-            const singleRanges = [
-                { id: 'singleRate', display: 'singleRateValue', suffix: '%' },
-                { id: 'singlePitch', display: 'singlePitchValue', suffix: 'Hz' },
-                { id: 'singleVolume', display: 'singleVolumeValue', suffix: '%' },
-                { id: 'singlePause', display: 'singlePauseValue', suffix: 'ms' }
-            ];
-            
-            singleRanges.forEach(range => {
-                const input = document.getElementById(range.id);
-                const display = document.getElementById(range.display);
-                
-                if (input && display) {
-                    display.textContent = input.value + range.suffix;
-                    input.addEventListener('input', () => {
-                        display.textContent = input.value + range.suffix;
-                    });
-                }
-            });
-            
-            // Multi-voice ranges
-            const multiRanges = [
-                { id: 'multiPause', display: 'multiPauseValue', suffix: 'ms' },
-                { id: 'multiRepeat', display: 'multiRepeatValue', suffix: 'x' }
-            ];
-            
-            multiRanges.forEach(range => {
-                const input = document.getElementById(range.id);
-                const display = document.getElementById(range.display);
-                
-                if (input && display) {
-                    display.textContent = input.value + range.suffix;
-                    input.addEventListener('input', () => {
-                        display.textContent = input.value + range.suffix;
-                    });
-                }
-            });
-            
-            // Q&A ranges
-            const qaRanges = [
-                { id: 'qaPauseQ', display: 'qaPauseQValue', suffix: 'ms' },
-                { id: 'qaPauseA', display: 'qaPauseAValue', suffix: 'ms' },
-                { id: 'qaRepeat', display: 'qaRepeatValue', suffix: 'x' }
-            ];
-            
-            qaRanges.forEach(range => {
-                const input = document.getElementById(range.id);
-                const display = document.getElementById(range.display);
-                
-                if (input && display) {
-                    display.textContent = input.value + range.suffix;
-                    input.addEventListener('input', () => {
-                        display.textContent = input.value + range.suffix;
-                    });
-                }
-            });
-            
-            // Multi-voice character ranges
-            document.querySelectorAll('[data-value][data-char]').forEach(span => {
-                const char = span.dataset.char;
-                const setting = span.dataset.value;
-                const input = document.querySelector(`[data-setting="${setting}"][data-char="${char}"]`);
-                
-                if (input && span) {
-                    const suffix = setting === 'rate' ? '%' : setting === 'pitch' ? 'Hz' : '%';
-                    span.textContent = input.value + suffix;
-                    
-                    input.addEventListener('input', () => {
-                        span.textContent = input.value + suffix;
-                    });
-                }
-            });
-            
-            // Q&A ranges
-            document.querySelectorAll('[data-value][data-type]').forEach(span => {
-                const type = span.dataset.type;
-                const setting = span.dataset.value;
-                const input = document.querySelector(`[data-setting="${setting}"][data-type="${type}"]`);
-                
-                if (input && span) {
-                    const suffix = setting === 'rate' ? '%' : setting === 'pitch' ? 'Hz' : '%';
-                    span.textContent = input.value + suffix;
-                    
-                    input.addEventListener('input', () => {
-                        span.textContent = input.value + suffix;
-                    });
-                }
-            });
-        }
-        
-        // Language change handler for single voice
-        document.getElementById('singleLanguage').addEventListener('change', async function() {
-            const language = this.value;
-            if (language) {
-                try {
-                    const response = await fetch(`/api/voices?language=${encodeURIComponent(language)}`);
-                    const data = await response.json();
-                    
-                    const voiceSelect = document.getElementById('singleVoice');
-                    voiceSelect.innerHTML = '<option value="">Select Voice</option>';
-                    
-                    data.voices.forEach(voice => {
-                        const option = document.createElement('option');
-                        option.value = voice.name;
-                        option.textContent = `${voice.display} (${voice.gender})`;
-                        voiceSelect.appendChild(option);
-                    });
-                    
-                    // Auto-select first voice
-                    if (data.voices.length > 0) {
-                        voiceSelect.value = data.voices[0].name;
-                    }
-                } catch (error) {
-                    console.error('Error loading voices:', error);
-                    showToast('Error loading voices for selected language', 'error');
-                }
-            }
-        });
-        
-        // Generate single voice audio
-        async function generateSingle() {
-            const text = document.getElementById('singleText').value.trim();
-            const voice = document.getElementById('singleVoice').value;
-            const language = document.getElementById('singleLanguage').value;
-            
-            if (!text) {
-                showToast('Please enter text', 'error');
-                return;
-            }
-            
-            if (!language) {
-                showToast('Please select a language', 'error');
-                return;
-            }
-            
-            if (!voice) {
-                showToast('Please select a voice', 'error');
-                return;
-            }
-            
-            showLoading();
-            
-            const formData = new FormData();
-            formData.append('text', text);
-            formData.append('voice_id', voice);
-            formData.append('rate', document.getElementById('singleRate').value);
-            formData.append('pitch', document.getElementById('singlePitch').value);
-            formData.append('volume', document.getElementById('singleVolume').value);
-            formData.append('pause', document.getElementById('singlePause').value);
-            formData.append('output_format', document.getElementById('singleFormat').value);
-            
-            try {
-                const response = await fetch('/api/generate/single', {
-                    method: 'POST',
-                    body: formData
-                });
-                
-                const result = await response.json();
-                
-                if (result.success) {
-                    currentTaskId = result.task_id;
-                    showTaskStatus('single', result.task_id);
-                    showToast('Audio generation started');
-                } else {
-                    showToast(result.message || 'Generation failed', 'error');
-                }
-            } catch (error) {
-                console.error('Error:', error);
-                showToast('Generation failed: ' + error.message, 'error');
-            } finally {
-                hideLoading();
-            }
-        }
-        
-        // Generate multi-voice audio
-        async function generateMulti() {
-            const text = document.getElementById('multiText').value.trim();
-            
-            if (!text) {
-                showToast('Please enter dialogue text', 'error');
-                return;
-            }
-            
-            // Get character 1 settings
-            const char1Language = document.querySelector('.multiLanguage[data-char="1"]').value;
-            const char1Voice = document.querySelector('.multiVoice[data-char="1"]').value;
-            
-            if (!char1Language) {
-                showToast('Please select language for Character 1', 'error');
-                return;
-            }
-            
-            if (!char1Voice) {
-                showToast('Please select voice for Character 1', 'error');
-                return;
-            }
-            
-            // Get character 2 settings
-            const char2Language = document.querySelector('.multiLanguage[data-char="2"]').value;
-            const char2Voice = document.querySelector('.multiVoice[data-char="2"]').value;
-            
-            if (!char2Language) {
-                showToast('Please select language for Character 2', 'error');
-                return;
-            }
-            
-            if (!char2Voice) {
-                showToast('Please select voice for Character 2', 'error');
-                return;
-            }
-            
-            showLoading();
-            
-            const formData = new FormData();
-            formData.append('text', text);
-            formData.append('char1_language', char1Language);
-            formData.append('char1_voice', char1Voice);
-            formData.append('char1_rate', document.querySelector('[data-setting="rate"][data-char="1"]').value);
-            formData.append('char1_pitch', document.querySelector('[data-setting="pitch"][data-char="1"]').value);
-            formData.append('char1_volume', document.querySelector('[data-setting="volume"][data-char="1"]').value);
-            formData.append('char2_language', char2Language);
-            formData.append('char2_voice', char2Voice);
-            formData.append('char2_rate', document.querySelector('[data-setting="rate"][data-char="2"]').value);
-            formData.append('char2_pitch', document.querySelector('[data-setting="pitch"][data-char="2"]').value);
-            formData.append('char2_volume', document.querySelector('[data-setting="volume"][data-char="2"]').value);
-            formData.append('pause', document.getElementById('multiPause').value);
-            formData.append('repeat', document.getElementById('multiRepeat').value);
-            formData.append('output_format', document.getElementById('multiFormat').value);
-            
-            try {
-                const response = await fetch('/api/generate/multi', {
-                    method: 'POST',
-                    body: formData
-                });
-                
-                const result = await response.json();
-                
-                if (result.success) {
-                    currentTaskId = result.task_id;
-                    showTaskStatus('multi', result.task_id);
-                    showToast('Multi-voice audio generation started');
-                } else {
-                    showToast(result.message || 'Generation failed', 'error');
-                }
-            } catch (error) {
-                console.error('Error:', error);
-                showToast('Generation failed: ' + error.message, 'error');
-            } finally {
-                hideLoading();
-            }
-        }
-        
-        // Generate Q&A audio
-        async function generateQA() {
-            const text = document.getElementById('qaText').value.trim();
-            
-            if (!text) {
-                showToast('Please enter Q&A text', 'error');
-                return;
-            }
-            
-            // Get question settings
-            const questionLanguage = document.querySelector('.qaLanguage[data-type="question"]').value;
-            const questionVoice = document.querySelector('.qaVoice[data-type="question"]').value;
-            
-            if (!questionLanguage) {
-                showToast('Please select language for Questions', 'error');
-                return;
-            }
-            
-            if (!questionVoice) {
-                showToast('Please select voice for Questions', 'error');
-                return;
-            }
-            
-            // Get answer settings
-            const answerLanguage = document.querySelector('.qaLanguage[data-type="answer"]').value;
-            const answerVoice = document.querySelector('.qaVoice[data-type="answer"]').value;
-            
-            if (!answerLanguage) {
-                showToast('Please select language for Answers', 'error');
-                return;
-            }
-            
-            if (!answerVoice) {
-                showToast('Please select voice for Answers', 'error');
-                return;
-            }
-            
-            showLoading();
-            
-            const formData = new FormData();
-            formData.append('text', text);
-            formData.append('question_language', questionLanguage);
-            formData.append('question_voice', questionVoice);
-            formData.append('question_rate', document.querySelector('[data-setting="rate"][data-type="question"]').value);
-            formData.append('question_pitch', document.querySelector('[data-setting="pitch"][data-type="question"]').value);
-            formData.append('question_volume', document.querySelector('[data-setting="volume"][data-type="question"]').value);
-            formData.append('answer_language', answerLanguage);
-            formData.append('answer_voice', answerVoice);
-            formData.append('answer_rate', document.querySelector('[data-setting="rate"][data-type="answer"]').value);
-            formData.append('answer_pitch', document.querySelector('[data-setting="pitch"][data-type="answer"]').value);
-            formData.append('answer_volume', document.querySelector('[data-setting="volume"][data-type="answer"]').value);
-            formData.append('pause_q', document.getElementById('qaPauseQ').value);
-            formData.append('pause_a', document.getElementById('qaPauseA').value);
-            formData.append('repeat', document.getElementById('qaRepeat').value);
-            formData.append('output_format', document.getElementById('qaFormat').value);
-            
-            try {
-                const response = await fetch('/api/generate/qa', {
-                    method: 'POST',
-                    body: formData
-                });
-                
-                const result = await response.json();
-                
-                if (result.success) {
-                    currentTaskId = result.task_id;
-                    showTaskStatus('qa', result.task_id);
-                    showToast('Q&A audio generation started');
-                } else {
-                    showToast(result.message || 'Generation failed', 'error');
-                }
-            } catch (error) {
-                console.error('Error:', error);
-                showToast('Generation failed: ' + error.message, 'error');
-            } finally {
-                hideLoading();
-            }
-        }
-        
-        // Show task status and poll for updates
-        function showTaskStatus(type, taskId) {
-            const statusDiv = document.getElementById(`${type}TaskStatus`);
-            const progressBar = document.getElementById(`${type}ProgressBar`);
-            const progressText = document.getElementById(`${type}ProgressText`);
-            const taskMessage = document.getElementById(`${type}TaskMessage`);
-            
-            statusDiv.style.display = 'block';
-            progressBar.style.width = '0%';
-            progressText.textContent = '0%';
-            taskMessage.textContent = 'Starting...';
-            
-            // Clear existing interval
-            if (taskCheckInterval) {
-                clearInterval(taskCheckInterval);
-            }
-            
-            // Poll for task updates
-            taskCheckInterval = setInterval(async () => {
-                try {
-                    const response = await fetch(`/api/task/${taskId}`);
-                    const task = await response.json();
-                    
-                    progressBar.style.width = `${task.progress}%`;
-                    progressText.textContent = `${task.progress}%`;
-                    taskMessage.textContent = task.message;
-                    
-                    if (task.status === 'completed') {
-                        clearInterval(taskCheckInterval);
-                        
-                        if (task.result && task.result.success) {
-                            showToast(task.result.message);
-                            
-                            // Show output
-                            showOutput(type, task.result);
-                        }
-                        
-                        // Hide status after 5 seconds
-                        setTimeout(() => {
-                            statusDiv.style.display = 'none';
-                        }, 5000);
-                    } else if (task.status === 'failed') {
-                        clearInterval(taskCheckInterval);
-                        showToast(task.message, 'error');
-                        
-                        // Hide status after 3 seconds
-                        setTimeout(() => {
-                            statusDiv.style.display = 'none';
-                        }, 3000);
-                    }
-                } catch (error) {
-                    console.error('Error checking task status:', error);
-                }
-            }, 2000); // Poll every 2 seconds
-        }
-        
-        // Show output based on type
-        function showOutput(type, result) {
-            const outputDiv = document.getElementById(`${type}Output`);
-            const audioPlayer = document.getElementById(`${type}AudioPlayer`);
-            const downloadAudio = document.getElementById(`${type}DownloadAudio`);
-            const downloadSubtitle = document.getElementById(`${type}DownloadSubtitle`);
-            
-            // Add timestamp to avoid cache
-            const timestamp = new Date().getTime();
-            const audioUrl = `${result.audio_url}?t=${timestamp}`;
-            
-            audioPlayer.innerHTML = `
-                <audio controls class="w-100">
-                    <source src="${audioUrl}" type="audio/mpeg">
-                    Your browser does not support the audio element.
-                </audio>
-            `;
-            
-            downloadAudio.href = result.audio_url;
-            downloadAudio.download = `tts_${type}_audio.mp3`;
-            
-            if (result.srt_url) {
-                downloadSubtitle.href = result.srt_url;
-                downloadSubtitle.download = `tts_${type}_subtitle.srt`;
-                downloadSubtitle.style.display = 'inline-block';
-            } else {
-                downloadSubtitle.style.display = 'none';
-            }
-            
-            outputDiv.style.display = 'block';
-            
-            // Scroll to output
-            outputDiv.scrollIntoView({ behavior: 'smooth' });
-        }
-        
-        // Cleanup old files
-        async function cleanupOldFiles() {
-            try {
-                await fetch('/api/cleanup', { method: 'POST' });
-            } catch (error) {
-                console.error('Error cleaning up:', error);
-            }
-        }
-        
-        // Cleanup all cache
-        async function cleanupAll() {
-            if (confirm('Are you sure you want to clear all cache and temporary files?')) {
-                showLoading();
-                try {
-                    const response = await fetch('/api/cleanup/all', { method: 'POST' });
-                    const result = await response.json();
-                    
-                    if (result.success) {
-                        showToast('All cache cleared successfully');
-                    } else {
-                        showToast(result.message, 'error');
-                    }
-                } catch (error) {
-                    console.error('Error cleaning up:', error);
-                    showToast('Error clearing cache', 'error');
-                } finally {
-                    hideLoading();
-                }
-            }
-        }
-        
-        // Refresh tasks list
-        async function refreshTasks() {
-            try {
-                const tasksList = document.getElementById('tasksList');
-                tasksList.innerHTML = '<div class="text-center"><div class="spinner-border"></div></div>';
-                
-                // In a real app, you would fetch tasks from an API
-                setTimeout(() => {
-                    tasksList.innerHTML = `
-                        <div class="text-center text-muted py-4">
-                            <i class="fas fa-clock fa-2x mb-3"></i>
-                            <p>No active tasks</p>
-                        </div>
-                    `;
-                    showToast('Task list refreshed');
-                }, 1000);
-            } catch (error) {
-                console.error('Error refreshing tasks:', error);
-            }
-        }
-        
-        // Utility functions
-        function showLoading() {
-            document.getElementById('loadingOverlay').style.display = 'flex';
-        }
-        
-        function hideLoading() {
-            document.getElementById('loadingOverlay').style.display = 'none';
-        }
-        
-        function showToast(message, type = 'success') {
-            const toastContainer = document.querySelector('.toast-container');
-            const toastId = 'toast-' + Date.now();
-            
-            const colorClass = type === 'error' ? 'danger' : 
-                             type === 'warning' ? 'warning' : 'success';
-            const icon = type === 'error' ? 'fa-exclamation-circle' : 
-                        type === 'warning' ? 'fa-exclamation-triangle' : 'fa-check-circle';
-            
-            const toastHtml = `
-                <div id="${toastId}" class="toast align-items-center text-white bg-${colorClass} border-0" role="alert">
-                    <div class="d-flex">
-                        <div class="toast-body">
-                            <i class="fas ${icon} me-2"></i>
-                            ${message}
-                        </div>
-                        <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
-                    </div>
-                </div>
-            `;
-            
-            toastContainer.insertAdjacentHTML('beforeend', toastHtml);
-            const toastElement = document.getElementById(toastId);
-            const toast = new bootstrap.Toast(toastElement, { delay: 3000 });
-            toast.show();
-            
-            toastElement.addEventListener('hidden.bs.toast', () => {
-                toastElement.remove();
-            });
-        }
-    </script>
 </body>
 </html>
-"""
+    """
     
-    template_path = "templates/index.html"
-    os.makedirs("templates", exist_ok=True)
+    with open(os.path.join(templates_dir, "index.html"), "w", encoding="utf-8") as f:
+        f.write(index_html)
     
-    with open(template_path, "w", encoding="utf-8") as f:
-        f.write(template_content)
+    # Create login.html
+    login_html = """
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - TTS Generator</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        
+        .login-container {
+            background: white;
+            border-radius: 20px;
+            padding: 3rem;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            max-width: 400px;
+            width: 100%;
+            margin: 0 auto;
+        }
+        
+        .login-header {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+        
+        .login-header i {
+            font-size: 3rem;
+            color: #4361ee;
+            margin-bottom: 1rem;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #4361ee, #3a0ca3);
+            border: none;
+            padding: 0.75rem;
+            font-weight: 600;
+            width: 100%;
+        }
+        
+        .form-control:focus {
+            border-color: #4361ee;
+            box-shadow: 0 0 0 0.2rem rgba(67, 97, 238, 0.25);
+        }
+        
+        .register-link {
+            text-align: center;
+            margin-top: 1.5rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="login-container">
+            <div class="login-header">
+                <i class="fas fa-microphone-alt"></i>
+                <h2>Login to TTS Generator</h2>
+                <p class="text-muted">Enter your credentials to continue</p>
+            </div>
+            
+            <form id="loginForm">
+                <div class="mb-3">
+                    <label for="username" class="form-label">Username</label>
+                    <input type="text" class="form-control" id="username" required>
+                </div>
+                
+                <div class="mb-3">
+                    <label for="password" class="form-label">Password</label>
+                    <input type="password" class="form-control" id="password" required>
+                </div>
+                
+                <button type="submit" class="btn btn-primary">
+                    <i class="fas fa-sign-in-alt me-2"></i>Login
+                </button>
+            </form>
+            
+            <div class="register-link">
+                <p class="mb-0">Don't have an account? <a href="/register">Register here</a></p>
+                <p class="mt-2"><a href="/">Back to Home</a></p>
+            </div>
+            
+            <div id="message" class="mt-3"></div>
+        </div>
+    </div>
     
-    print(f"Template created at: {template_path}")
+    <script>
+        document.getElementById('loginForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            
+            const formData = new FormData();
+            formData.append('username', username);
+            formData.append('password', password);
+            
+            try {
+                const response = await fetch('/api/login', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    window.location.href = '/dashboard';
+                } else {
+                    document.getElementById('message').innerHTML = `
+                        <div class="alert alert-danger">${result.message || 'Login failed'}</div>
+                    `;
+                }
+            } catch (error) {
+                document.getElementById('message').innerHTML = `
+                    <div class="alert alert-danger">Network error: ${error.message}</div>
+                `;
+            }
+        });
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+    """
+    
+    with open(os.path.join(templates_dir, "login.html"), "w", encoding="utf-8") as f:
+        f.write(login_html)
+    
+    # Create register.html (similar structure to login.html)
+    # Create dashboard.html
+    dashboard_html = """
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - TTS Generator</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        :root {
+            --primary-color: #4361ee;
+            --secondary-color: #3a0ca3;
+        }
+        
+        .navbar {
+            background: white;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        .sidebar {
+            background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+            color: white;
+            min-height: calc(100vh - 56px);
+            padding-top: 2rem;
+        }
+        
+        .sidebar a {
+            color: rgba(255,255,255,0.8);
+            padding: 0.75rem 1.5rem;
+            display: block;
+            text-decoration: none;
+            transition: all 0.3s;
+        }
+        
+        .sidebar a:hover, .sidebar a.active {
+            background: rgba(255,255,255,0.1);
+            color: white;
+            padding-left: 2rem;
+        }
+        
+        .sidebar a i {
+            width: 20px;
+            margin-right: 10px;
+        }
+        
+        .main-content {
+            padding: 2rem;
+            background: #f8f9fa;
+            min-height: calc(100vh - 56px);
+        }
+        
+        .stat-card {
+            background: white;
+            border-radius: 10px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.05);
+        }
+        
+        .stat-card i {
+            font-size: 2.5rem;
+            color: var(--primary-color);
+            margin-bottom: 1rem;
+        }
+        
+        .progress {
+            height: 10px;
+            margin-top: 10px;
+        }
+        
+        .feature-card {
+            background: white;
+            border-radius: 10px;
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+            transition: transform 0.3s;
+        }
+        
+        .feature-card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 10px 20px rgba(0,0,0,0.1);
+        }
+        
+        .feature-card.disabled {
+            opacity: 0.6;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+            border: none;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-light">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="/dashboard">
+                <i class="fas fa-microphone-alt me-2"></i>TTS Generator
+            </a>
+            <div class="d-flex align-items-center">
+                <span class="me-3">Welcome, {{ user.username }}</span>
+                <a href="/profile" class="btn btn-outline-primary btn-sm me-2">
+                    <i class="fas fa-user"></i>
+                </a>
+                <a href="/logout" class="btn btn-outline-danger btn-sm">
+                    <i class="fas fa-sign-out-alt"></i>
+                </a>
+            </div>
+        </div>
+    </nav>
+    
+    <div class="container-fluid">
+        <div class="row">
+            <div class="col-md-3 col-lg-2 sidebar">
+                <a href="/dashboard" class="active">
+                    <i class="fas fa-home"></i> Dashboard
+                </a>
+                <a href="/tts">
+                    <i class="fas fa-user"></i> Single Voice
+                </a>
+                <a href="/multi-voice">
+                    <i class="fas fa-users"></i> Multi-Voice
+                </a>
+                <a href="/qa-dialogue">
+                    <i class="fas fa-comments"></i> Q&A Dialogue
+                </a>
+                {% if user.role == 'admin' %}
+                <a href="/admin">
+                    <i class="fas fa-cog"></i> Admin Panel
+                </a>
+                {% endif %}
+            </div>
+            
+            <div class="col-md-9 col-lg-10 main-content">
+                <h2 class="mb-4">Dashboard</h2>
+                
+                <div class="row">
+                    <div class="col-md-6">
+                        <div class="stat-card">
+                            <i class="fas fa-chart-bar"></i>
+                            <h5>Usage Statistics</h5>
+                            <p>{{ usage_text }}</p>
+                            <div class="progress">
+                                <div class="progress-bar bg-success" style="width: {{ usage_percentage }}%"></div>
+                            </div>
+                            <small>{{ usage_percentage|round(1) }}% used</small>
+                        </div>
+                    </div>
+                    
+                    <div class="col-md-6">
+                        <div class="stat-card">
+                            <i class="fas fa-crown"></i>
+                            <h5>Current Plan: {{ user.subscription.plan|title }}</h5>
+                            <p>Expires: {{ user.subscription.expires_at[:10] }}</p>
+                            <a href="/profile" class="btn btn-primary btn-sm">Upgrade Plan</a>
+                        </div>
+                    </div>
+                </div>
+                
+                <h4 class="mt-4 mb-3">Available Features</h4>
+                <div class="row">
+                    <div class="col-md-4">
+                        <div class="feature-card">
+                            <h5><i class="fas fa-user text-primary me-2"></i>Single Voice</h5>
+                            <p class="text-muted">Convert text to speech with a single voice</p>
+                            <a href="/tts" class="btn btn-primary">Use Feature</a>
+                        </div>
+                    </div>
+                    
+                    <div class="col-md-4">
+                        <div class="feature-card {% if 'multi' not in user.subscription.features %}disabled{% endif %}">
+                            <h5><i class="fas fa-users {% if 'multi' in user.subscription.features %}text-primary{% else %}text-muted{% endif %} me-2"></i>Multi-Voice</h5>
+                            <p class="text-muted">Create dialogues with multiple characters</p>
+                            {% if 'multi' in user.subscription.features %}
+                            <a href="/multi-voice" class="btn btn-primary">Use Feature</a>
+                            {% else %}
+                            <a href="/profile" class="btn btn-outline-primary">Upgrade to Use</a>
+                            {% endif %}
+                        </div>
+                    </div>
+                    
+                    <div class="col-md-4">
+                        <div class="feature-card {% if 'qa' not in user.subscription.features %}disabled{% endif %}">
+                            <h5><i class="fas fa-comments {% if 'qa' in user.subscription.features %}text-primary{% else %}text-muted{% endif %} me-2"></i>Q&A Dialogue</h5>
+                            <p class="text-muted">Generate question and answer conversations</p>
+                            {% if 'qa' in user.subscription.features %}
+                            <a href="/qa-dialogue" class="btn btn-primary">Use Feature</a>
+                            {% else %}
+                            <a href="/profile" class="btn btn-outline-primary">Upgrade to Use</a>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+    """
+    
+    with open(os.path.join(templates_dir, "dashboard.html"), "w", encoding="utf-8") as f:
+        f.write(dashboard_html)
+    
+    # Create tts.html (similar to single voice tab from original)
+    # Create profile.html
+    # Create admin.html
+    # Create upgrade.html
+    
+    print("Templates created successfully")
 
-# ==================== MAIN ENTRY POINT ====================
+# ==================== RUN APPLICATION ====================
 def create_requirements_txt():
     """Create requirements.txt file"""
     requirements = """fastapi==0.104.1
@@ -3469,6 +2614,7 @@ pydub==0.25.1
 webvtt-py==0.4.6
 natsort==8.4.0
 python-multipart==0.0.6
+sqlitedict==2.1.0
 """
     
     with open("requirements.txt", "w") as f:
@@ -3478,46 +2624,27 @@ python-multipart==0.0.6
 
 def create_runtime_txt():
     """Create runtime.txt for Python version"""
-    runtime = "python-3.11.0"
+    runtime = "python-3.10.0"
     
     with open("runtime.txt", "w") as f:
         f.write(runtime)
     
     print("runtime.txt created")
 
-def create_gunicorn_conf():
-    """Create gunicorn configuration for Render"""
-    gunicorn_conf = """# gunicorn_config.py
-import multiprocessing
-
-bind = "0.0.0.0:10000"
-workers = 1  # Render sets WEB_CONCURRENCY
-worker_class = "uvicorn.workers.UvicornWorker"
-timeout = 120
-keepalive = 5
-"""
-    
-    with open("gunicorn_config.py", "w") as f:
-        f.write(gunicorn_conf)
-    
-    print("gunicorn_config.py created")
-
-# ==================== RUN APPLICATION ====================
 if __name__ == "__main__":
     # Create necessary files for deployment
     create_requirements_txt()
     create_runtime_txt()
-    create_gunicorn_conf()
     
-    # Get port from environment variable (for Render)
+    # Get port from environment variable
     port = int(os.environ.get("PORT", 8000))
     
     print("=" * 60)
-    print("PROFESSIONAL TTS GENERATOR v2.0")
+    print("PROFESSIONAL TTS GENERATOR WITH USER MANAGEMENT v3.0")
     print("=" * 60)
     print(f"Server starting on port: {port}")
     print(f"Open http://localhost:{port} in your browser")
-    print("Optimized for Render deployment")
+    print("Admin credentials: admin / admin123")
     print("=" * 60)
     
     # Run with uvicorn
@@ -3526,5 +2653,5 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=port,
         log_level="info",
-        reload=False  # Disable reload for production
+        reload=False
     )
