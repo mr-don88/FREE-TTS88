@@ -21,4 +21,4 @@ RUN mkdir -p outputs temp static/css static/js templates
 EXPOSE 8000
 
 # Run the application
-CMD ["python", "main.py"]
+CMD ["python", "app.py"]
